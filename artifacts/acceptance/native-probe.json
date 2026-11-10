@@ -1,0 +1,19 @@
+{
+  "passed": true,
+  "progid": "Tecnomatix.PlantSimulation.RemoteControl.26.6",
+  "event_controller": ".Models.Model.EventController",
+  "api_paths_verified": [
+    "ResetSimulation",
+    "StartSimulation",
+    "StepSimulation"
+  ],
+  "completions_s": [
+    10.0,
+    20.0
+  ],
+  "native_completed": 2,
+  "queue": 0,
+  "occupied": 0,
+  "owned_pid": 18052,
+  "quit_called": true
+}

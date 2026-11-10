@@ -1,0 +1,19 @@
+{
+  "relations": {
+    "nodes": 51,
+    "edges": 86
+  },
+  "impact": {
+    "nodes": 23,
+    "edges": 42
+  },
+  "schema": {
+    "nodes": 13,
+    "edges": 5
+  },
+  "unchanged_snapshot_reused": true,
+  "speed_does_not_resume_paused_source": true,
+  "conflicting_duplicate_rejected": true,
+  "native_view_reconstructs_current_scene": true,
+  "passed": true
+}

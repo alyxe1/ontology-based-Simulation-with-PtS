@@ -1,0 +1,31 @@
+@prefix os: <urn:ontologysim:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix iof: <https://spec.industrialontologies.org/ontology/construct/> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+os:Ontology a owl:Ontology ; owl:versionInfo "1.0" ;
+  rdfs:comment "PoC application ontology. Reference mappings, not a certified implementation or an import of the complete IOF closure." .
+os:Equipment a owl:Class ; rdfs:label "设备" ; skos:closeMatch iof:PieceOfEquipment .
+os:Capability a owl:Class ; rdfs:label "加工能力" .
+os:Product a owl:Class ; rdfs:label "产品" .
+os:OperationPlan a owl:Class ; rdfs:label "工序计划" ; skos:closeMatch iof:PlanSpecification .
+os:OperationExecution a owl:Class ; rdfs:label "工序执行" ; skos:closeMatch iof:PlannedProcess .
+os:Order a owl:Class ; rdfs:label "生产订单" .
+os:Workpiece a owl:Class ; rdfs:label "工件" .
+os:Tool a owl:Class ; rdfs:label "刀具" .
+os:MaintenanceEvent a owl:Class ; rdfs:subClassOf os:OperationExecution ; rdfs:label "维护事件" .
+os:Observation a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "源观测" .
+os:Snapshot a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "现场快照" .
+os:Scenario a owl:Class ; rdfs:label "预测方案" .
+os:RunResult a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "仿真结果" .
+os:hasCapability a owl:ObjectProperty ; rdfs:domain os:Equipment ; rdfs:range os:Capability .
+os:hasOperation a owl:ObjectProperty ; rdfs:domain os:Product ; rdfs:range os:OperationPlan .
+os:forProduct a owl:ObjectProperty ; rdfs:domain os:Order ; rdfs:range os:Product .
+os:forOrder a owl:ObjectProperty ; rdfs:domain os:Workpiece ; rdfs:range os:Order .
+os:assignedTo a owl:ObjectProperty ; rdfs:range os:Equipment .
+os:affects a owl:ObjectProperty .
+os:hasTool a owl:ObjectProperty ; rdfs:domain os:Equipment ; rdfs:range os:Tool .
+os:locatedAt a owl:ObjectProperty .
+os:derivedFrom a owl:ObjectProperty ; rdfs:subPropertyOf prov:wasDerivedFrom .

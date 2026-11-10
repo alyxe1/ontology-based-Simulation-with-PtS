@@ -1,0 +1,284 @@
+{
+  "passed": true,
+  "freeze_time": 3843.223713,
+  "boundary": 188,
+  "state_hash": "2ff5140a17ac85e4744a2245bd591219b9cf06c86fed54a9f4bbc9e5e1ff6dd5",
+  "restore_verified": true,
+  "continued_event_order_identical": true,
+  "scenarios": [
+    {
+      "name": "维持 FIFO",
+      "kpi": {
+        "window_start_s": 3843.223713,
+        "window_end_s": 129600.0,
+        "completed": 79,
+        "mean_wip": 74.582,
+        "makespan_s": null,
+        "completed_in_window": 72,
+        "wip": 41,
+        "completed_orders": 3,
+        "on_time_orders": 1,
+        "late_completed_orders": 2,
+        "unfinished_orders": 3,
+        "total_tardiness_s": 88174.48779400002,
+        "mean_wait_started_s": 16667.562,
+        "utilization": {
+          "SAW": 0.017378,
+          "CNC01": 0.244834,
+          "CNC02": 0.0,
+          "CNC03": 0.0,
+          "DEBURR": 0.043506,
+          "CMM": 0.05154
+        }
+      },
+      "native": {
+        "verified": true,
+        "clock_s": 129600.0,
+        "completed": 79,
+        "transit": 0,
+        "resources": {
+          "SAW": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC01": {
+            "queued": 40,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": [
+              "J0081",
+              "J0082",
+              "J0083",
+              "J0084",
+              "J0085",
+              "J0086",
+              "J0087",
+              "J0088",
+              "J0089",
+              "J0090",
+              "J0091",
+              "J0092",
+              "J0093",
+              "J0094",
+              "J0095",
+              "J0096",
+              "J0097",
+              "J0098",
+              "J0099",
+              "J0100",
+              "J0101",
+              "J0102",
+              "J0103",
+              "J0104",
+              "J0105",
+              "J0106",
+              "J0107",
+              "J0108",
+              "J0109",
+              "J0110",
+              "J0111",
+              "J0112",
+              "J0113",
+              "J0114",
+              "J0115",
+              "J0116",
+              "J0117",
+              "J0118",
+              "J0119",
+              "J0120"
+            ]
+          },
+          "CNC02": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC03": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "DEBURR": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CMM": {
+            "queued": 1,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": [
+              "J0080"
+            ]
+          }
+        },
+        "clock_tolerance_s": 1e-06,
+        "pid": 52380,
+        "engine": "Tecnomatix.PlantSimulation.RemoteControl.26.6",
+        "event_controller": ".Models.Model.EventController",
+        "steps": 1211,
+        "termination": "horizon",
+        "all_completed": false
+      }
+    },
+    {
+      "name": "兼容设备改派 + EDD",
+      "kpi": {
+        "window_start_s": 3843.223713,
+        "window_end_s": 129600.0,
+        "completed": 120,
+        "mean_wip": 11.948,
+        "makespan_s": 90791.11097400001,
+        "completed_in_window": 113,
+        "wip": 0,
+        "completed_orders": 6,
+        "on_time_orders": 6,
+        "late_completed_orders": 0,
+        "unfinished_orders": 0,
+        "total_tardiness_s": 0,
+        "mean_wait_started_s": 3745.784,
+        "utilization": {
+          "SAW": 0.017378,
+          "CNC01": 0.127091,
+          "CNC02": 0.109099,
+          "CNC03": 0.133559,
+          "DEBURR": 0.06727,
+          "CMM": 0.081086
+        }
+      },
+      "native": {
+        "verified": true,
+        "clock_s": 129600.0,
+        "completed": 120,
+        "transit": 0,
+        "resources": {
+          "SAW": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC01": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC02": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC03": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "DEBURR": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CMM": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          }
+        },
+        "clock_tolerance_s": 1e-06,
+        "pid": 27440,
+        "engine": "Tecnomatix.PlantSimulation.RemoteControl.26.6",
+        "event_controller": ".Models.Model.EventController",
+        "steps": 1605,
+        "termination": "horizon",
+        "all_completed": true
+      }
+    },
+    {
+      "name": "兼容设备改派 + 延长班次",
+      "kpi": {
+        "window_start_s": 3843.223713,
+        "window_end_s": 129600.0,
+        "completed": 120,
+        "mean_wip": 10.128,
+        "makespan_s": 33555.057656,
+        "completed_in_window": 113,
+        "wip": 0,
+        "completed_orders": 6,
+        "on_time_orders": 6,
+        "late_completed_orders": 0,
+        "unfinished_orders": 0,
+        "total_tardiness_s": 0,
+        "mean_wait_started_s": 3144.959,
+        "utilization": {
+          "SAW": 0.017378,
+          "CNC01": 0.127091,
+          "CNC02": 0.109099,
+          "CNC03": 0.133559,
+          "DEBURR": 0.06727,
+          "CMM": 0.081086
+        }
+      },
+      "native": {
+        "verified": true,
+        "clock_s": 129600.0,
+        "completed": 120,
+        "transit": 0,
+        "resources": {
+          "SAW": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC01": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC02": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CNC03": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "DEBURR": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          },
+          "CMM": {
+            "queued": 0,
+            "occupied": 0,
+            "busy": null,
+            "queue_members": []
+          }
+        },
+        "clock_tolerance_s": 1e-06,
+        "pid": 18052,
+        "engine": "Tecnomatix.PlantSimulation.RemoteControl.26.6",
+        "event_controller": ".Models.Model.EventController",
+        "steps": 1604,
+        "termination": "horizon",
+        "all_completed": true
+      }
+    }
+  ]
+}

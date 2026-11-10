@@ -1,0 +1,17 @@
+.runtime/
+.venv/
+__pycache__/
+.pytest_cache/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Local release outputs and reference materials
+/artifacts/demo/
+/delivery/
+/tmp/
+/Ontology-Based+Production+Simulation+with+OntologySim.pdf

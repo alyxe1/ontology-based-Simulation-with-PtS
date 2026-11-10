@@ -1,0 +1,20 @@
+@prefix os: <urn:ontologysim:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+os:EquipmentShape a sh:NodeShape ; sh:targetClass os:Equipment ;
+  sh:property [ sh:path os:hasCapability ; sh:minCount 1 ; sh:class os:Capability ] ;
+  sh:property [ sh:path os:unit ; sh:hasValue "s" ; sh:maxCount 1 ] .
+os:CapabilityShape a sh:NodeShape ; sh:targetClass os:Capability ;
+  sh:property [ sh:path os:tolerance ; sh:minCount 1 ; sh:maxCount 1 ; sh:minExclusive 0 ] ;
+  sh:property [ sh:path os:material ; sh:minCount 1 ] .
+os:OperationShape a sh:NodeShape ; sh:targetClass os:OperationPlan ;
+  sh:property [ sh:path os:duration ; sh:minCount 1 ; sh:maxCount 1 ; sh:minExclusive 0 ] ;
+  sh:property [ sh:path os:preferred ; sh:minCount 1 ; sh:class os:Equipment ] ;
+  sh:property [ sh:path os:unit ; sh:hasValue "s" ] .
+os:OrderShape a sh:NodeShape ; sh:targetClass os:Order ;
+  sh:property [ sh:path os:forProduct ; sh:minCount 1 ; sh:maxCount 1 ; sh:class os:Product ] ;
+  sh:property [ sh:path os:quantity ; sh:minExclusive 0 ; sh:datatype xsd:integer ] .
+os:WorkpieceShape a sh:NodeShape ; sh:targetClass os:Workpiece ;
+  sh:property [ sh:path os:locatedAt ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path os:forOrder ; sh:minCount 1 ; sh:maxCount 1 ; sh:class os:Order ] .
