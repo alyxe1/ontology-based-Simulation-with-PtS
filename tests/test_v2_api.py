@@ -9,7 +9,8 @@ from app_v2.runtime import OntologyRuntime
 from app_v2.bundles import verify_bundle
 
 @pytest.fixture
-def web(tmp_path):
+def web(tmp_path,monkeypatch):
+    monkeypatch.setattr("app_v2.service.REFERENCE_DIR",tmp_path/"no-packaged-reference")
     with TestClient(create_app(tmp_path,workers=False),headers={"x-ontologysim":"v2"}) as client:
         assert client.post('/api/v2/setup',json=dict(username='owner',name='Test owner',password='test-only-long-password',role='admin')).status_code==200
         assert client.post('/api/v2/login',json=dict(username='owner',password='test-only-long-password')).status_code==200

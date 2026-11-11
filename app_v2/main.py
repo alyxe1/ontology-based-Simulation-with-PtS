@@ -109,6 +109,8 @@ def create_app(root=DATA, workers=True):
         return await w.create_workspace(spec,actor(account))
     @app.post("/api/v2/source/{action}")
     async def source(action:str,body:dict,account=Depends(writer),w=Depends(workbench)):
+        if action=='retry':return await w.retry_source(actor(account))
+        if action=='restart':return await w.create_workspace(spec_from_graph(runtime(w,'live').graph),actor(account))
         w.source_control(action,actor(account),body.get("speed"));return {"ok":True}
     @app.post("/api/v2/internal/mes")
     async def mes(body:SourceRecordEnvelope,request:Request,w=Depends(workbench)):

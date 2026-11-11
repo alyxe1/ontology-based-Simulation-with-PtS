@@ -10,7 +10,7 @@ V0.2 使用独立的 `app_v2`、`ontologysim-v02` micromamba 环境与 `.runtime
 
 1. 首次部署执行 **install.cmd**；本机已安装独立环境。
 2. 双击 **start.cmd**，打开 **http://127.0.0.1:8820**，首次创建本地管理员。
-3. 点击“载入柔性机加工车间”，准备原生参考轨迹后接入现场数据。
+3. 点击“载入柔性机加工车间”。默认配置核对随附的原生参考轨迹后直接启动 MES／OPC UA 接入；配置或执行模型改变时重新计算，并在页面顶部显示准备进度。
 4. 使用 **stop.cmd** 退出并释放本应用的 COM 会话。
 
 需要 Windows、micromamba、Node.js 及有可用许可的 Plant Simulation 2606。实测版本为 **2606.0006**，ProgID 为 `Tecnomatix.PlantSimulation.RemoteControl.26.6`。安装后的前后端可离线运行；许可服务按本机配置工作。
@@ -55,3 +55,9 @@ micromamba run -n ontologysim-v02 python -X utf8 -m scripts.verify_evidence arch
 ```
 
 原生验收脚本会创建自己的 Plant Simulation 会话。不要与工作台原生任务同时运行。
+
+## 2026-11-12 首次载入修复
+
+修复首次使用必须等待全量参考仿真、进度位于长表格底部的问题。默认车间随包提供已签名且经过 Plant Simulation 核对的参考轨迹；加载时检查签名公钥、配置、模型版本和内容摘要。轨迹只进入独立数据发布器，未来记录不进入分析基线，方案仍由原生引擎执行。
+
+准备、就绪、失败和正常播放结束均显示在顶部。失败提供重试；播放结束提供“归档并重新载入”，保留旧工作空间与证据。浏览器增加状态轮询作为实时通知的补充。首次载入验收报告见 [first-load.json](artifacts/v02/first-load.json)。

@@ -16,7 +16,8 @@ class Accounts:
         CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires REAL NOT NULL);
         ''');self.db.commit();self.failures={}
 
-    def users(self):return [dict(r) for r in self.db.execute("SELECT id,name,role,active FROM users ORDER BY id")]
+    def users(self):
+        with self.lock:return [dict(r) for r in self.db.execute("SELECT id,name,role,active FROM users ORDER BY id")]
     def initialized(self):return bool(self.users())
 
     def create(self,username,name,role,password):
@@ -29,23 +30,31 @@ class Accounts:
         return {"id":username,"name":name,"role":role}
 
     def login(self,username,password):
-        attempts=[t for t in self.failures.get(username,[]) if t>time.time()-300]
-        if len(attempts)>=10:raise ValueError("登录失败次数过多，请 5 分钟后重试")
-        user=self.db.execute("SELECT * FROM users WHERE id=? AND active=1",(username,)).fetchone()
+        with self.lock:
+            attempts=[t for t in self.failures.get(username,[]) if t>time.time()-300]
+            if len(attempts)>=10:raise ValueError("登录失败次数过多，请 5 分钟后重试")
+            user=self.db.execute("SELECT * FROM users WHERE id=? AND active=1",(username,)).fetchone()
         salt=user["salt"] if user else b"0"*16
         candidate=hashlib.scrypt(password.encode(),salt=salt,n=16384,r=8,p=1)
         if not user or not hmac.compare_digest(candidate,user["password"]):
-            self.failures[username]=[*attempts,time.time()];raise ValueError("账号或密码错误")
-        self.failures.pop(username,None);token=secrets.token_urlsafe(40)
-        with self.lock,self.db:self.db.execute("INSERT INTO sessions VALUES (?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),username,time.time()+8*3600))
+            with self.lock:self.failures.setdefault(username,[]).append(time.time())
+            raise ValueError("账号或密码错误")
+        token=secrets.token_urlsafe(40)
+        with self.lock,self.db:
+            self.failures.pop(username,None)
+            self.db.execute("INSERT INTO sessions VALUES (?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),username,time.time()+8*3600))
         return token,{k:user[k] for k in ("id","name","role")}
 
     def session(self,token):
         if not token:return None
-        row=self.db.execute("SELECT u.id,u.name,u.role FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1",(hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
+        # FastAPI sync dependencies run in different threads. Serialize both reads
+        # and writes on the shared connection, including cursor consumption.
+        with self.lock:
+            row=self.db.execute("SELECT u.id,u.name,u.role FROM users u JOIN sessions s ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1",(hashlib.sha256(token.encode()).hexdigest(),time.time())).fetchone()
         return dict(row) if row else None
 
     def logout(self,token):
         with self.lock,self.db:self.db.execute("DELETE FROM sessions WHERE token=?",(hashlib.sha256(token.encode()).hexdigest(),))
 
-    def close(self):self.db.close()
+    def close(self):
+        with self.lock:self.db.close()

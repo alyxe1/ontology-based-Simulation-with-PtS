@@ -1,0 +1,1 @@
+{"checkpoint":"checkpoint_0eeee09b32e6496c","first_load_seconds":6.032,"http_and_opc":true,"maintenance_time_s":3092.752784,"native_bootstrap_required":false,"native_restore":{"clock_s":3092.752784,"completed":4,"native_clock_s":0,"verified":true},"passed":true,"provenance_sealed_commits":1453,"retained_workspace_count":5,"signature_valid":true,"source_cursor":180}

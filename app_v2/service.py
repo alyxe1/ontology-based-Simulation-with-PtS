@@ -10,10 +10,12 @@ import shutil
 import time
 import zipfile
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from asyncua import Client
 from .common import BASE, DATA, EPS, NS, atomic_write, canonical, digest, now, uid
 from .auth import Accounts
+from .reference import REFERENCE_DIR, model_contract, verified_reference
 from .contracts import SourceRecordEnvelope
 from .evidence import Signer
 from .graph import OntologyStore, Ref, encode_record, decode_record
@@ -102,6 +104,7 @@ class Workbench:
                 if not task:continue
                 if kind=="progress":
                     self.progress[tid]=data["summary"];task.update(time_s=data["summary"]["time_s"],completed=data["summary"]["kpi"]["completed"])
+                    task['updated_at']=now()
                     self.audit("task_progress",changes=[task])
                 elif kind=="checkpoint":
                     self.progress[tid]=data["summary"]
@@ -119,7 +122,7 @@ class Workbench:
                         self.graph(str(ws['id'])).commit([generation],'source_generation_confirmed',actor='service/factory-generator',used=['configuration'],reason='参考轨迹由真实原生运行生成，保留参数、种子和生成证明；未来观测仍由发布器隔离保存')
                         self.audit("factory_source_ready",changes=[ws],used=[tid]);await self.start_source(ws);self.source_pause.clear()
                 elif kind in ("failed","cancelled"):
-                    task.update(status=data.get("status",kind),error=data["message"],hresult=str(data.get("hresult","")))
+                    task.update(status=data.get("status",kind),error=data["message"],hresult=str(data.get("hresult","")),updated_at=now())
                     self.audit("task_"+kind,changes=[task],reason=data["message"]);self.active_task=None
                 elif kind in ("owner","released","release_error"):
                     self.audit("native_"+kind,used=[tid],details=data)
@@ -148,7 +151,7 @@ class Workbench:
         ws=dict(id=wid,type="Workspace",name=spec.name,status="active",created_at=now(),cursor=-1,spec_revision=1,synthetic=True)
         self.audit("workspace_created",actor,changes=[ws,dict(id="active_workspace",type="Pointer",workspace=Ref(wid))])
         self.pending={};self.source_status.update(cursor=-1,connected=False,quality="preparing")
-        contract=digest({str(path.relative_to(BASE)):hashlib.sha256(path.read_bytes()).hexdigest() for path in [BASE/'app_v2/runtime.py',BASE/'app_v2/native.py',BASE/'app_v2/specification.py',BASE/'app_v2/worker.py',BASE/'ontology/v2/core.ttl']})
+        contract=model_contract()
         for previous in self.tasks():
             payload=json.loads(previous['payload'])
             if previous['kind']!='baseline' or previous['status']!='completed' or payload.get('model_contract')!=contract or payload.get('spec')!=loaded.model_dump():continue
@@ -160,10 +163,53 @@ class Workbench:
                 if previous_generation:g.commit([previous_generation],'source_generation_referenced',actor=actor,used=['configuration'],reason='复用同一已验证参考轨迹的生成记录')
                 await self.start_source(ws);self.source_pause.clear()
                 return dict(id=wid,workspace=wid,kind='source_reused',status='completed')
+        try:
+            reference=verified_reference(loaded.model_dump(),REFERENCE_DIR)
+        except Exception as ex:
+            self.audit('factory_reference_rejected',actor,reason=str(ex))
+            reference=None
+        if reference:
+            trace,metadata,envelope=reference
+            # Future frames stay in the private publisher vault, outside all API contexts.
+            target=self.root/'source-vault'/wid/'source.jsonl';target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(trace,target)
+            identity='reference_'+metadata['trace_hash'][:16]
+            manifest_record=dict(id='source/reference/manifest',type='SourceRecord',source='REFERENCE',
+                raw_id='factory-reference/manifest.json',payload=canonical(envelope),hash=digest(envelope),
+                received_at=now(),event_time=0.,quality='good',synthetic=True)
+            g.commit([manifest_record],'reference_manifest_verified',actor='service/artifact-validation',
+                reason='保留随附轨迹的签名发布清单，记录生成任务及原生核对产物摘要')
+            generation=dict(id='generation/'+identity,type='SourceGeneration',native_task=metadata['native_task'],
+                algorithm=metadata['algorithm'],seed=metadata['seed'],model_contract=metadata['model_contract'],
+                trace_hash=metadata['trace_hash'],started_at=metadata['generated_at'],native_verified=True,
+                source_kind='synthetic',origin='packaged-native-reference',manifest_hash=digest(envelope),
+                native_result_hash=metadata['native_result_hash'],runtime_hash=metadata['runtime_hash'],source=Ref(manifest_record['id']))
+            g.commit([generation],'source_generation_referenced',actor=actor,used=['configuration',manifest_record['id']],
+                reason='使用随版本交付且签名、配置、模型与内容摘要均已核对的原生参考轨迹；方案仍执行真实原生仿真')
+            ws.update(trace_path=str(target),baseline_task=Ref(identity))
+            self.audit('factory_reference_loaded',actor,changes=[ws],used=[wid],details={'generation':generation['id'],'trace_hash':metadata['trace_hash']})
+            await self.start_source(ws);self.source_pause.clear()
+            return dict(id=wid,workspace=wid,kind='source_reused',status='completed')
         return self.submit("baseline",actor,wid,spec=loaded.model_dump(),model_contract=contract)
+
+    async def retry_source(self,actor):
+        ws=self.active()
+        if not ws:raise ValueError('请先载入工作空间')
+        if self.active_task or any(t['status']=='queued' for t in self.tasks()):raise ValueError('请先完成或取消当前原生任务')
+        if ws.get('trace_path') and Path(ws['trace_path']).exists():
+            await self.start_source(ws);self.source_pause.clear()
+            self.audit('source_reconnected',actor,used=[ws['id']]);return {'status':'connecting'}
+        spec=spec_from_graph(self.graph(ws['id']))
+        return self.submit('baseline',actor,ws['id'],spec=spec.model_dump(),model_contract=model_contract())
 
     async def start_source(self,workspace):
         await self.stop_source();self.source_stop.clear();self.source_pause.set()
+        if 'trace_end_cursor' not in workspace:
+            with Path(workspace['trace_path']).open(encoding='utf-8') as stream:
+                workspace['trace_end_cursor']=sum(1 for line in stream if line.strip())-1
+            self.audit('source_extent_recorded',changes=[workspace],reason='记录参考轨迹发布边界，区分正常结束与断连')
+        if workspace['cursor']>=workspace['trace_end_cursor']:
+            self.source_status.update(quality='completed',connected=False,cursor=workspace['cursor']);return
         spec=spec_from_graph(self.graph(workspace["id"]))
         config=dict(workspace=workspace["id"],spec=spec.model_dump(),trace_path=workspace["trace_path"],cursor=workspace.get("cursor",-1),url=f"http://127.0.0.1:{self.port}",endpoint=self.source_status["endpoint"],token=self.source_token)
         self.publisher=mp.Process(target=publisher_main,args=(config,self.source_pause,self.source_stop,self.speed,self.target),daemon=False)
@@ -193,6 +239,8 @@ class Workbench:
                     try:service.ingest(SourceRecordEnvelope.model_validate_json(value))
                     except Exception as ex:service.audit("opc_rejected",reason=str(ex))
         while not self.source_stop.is_set():
+            if self.source_exhausted():
+                self.source_status.update(quality='completed',connected=False);self.source_pause.set();return
             try:
                 async with Client(self.source_status["endpoint"],timeout=3) as client:
                     idx=await client.get_namespace_index("urn:ontologysim:v2:factory")
@@ -201,6 +249,8 @@ class Workbench:
                     subscription=await client.create_subscription(10,Handler());await subscription.subscribe_data_change(nodes)
                     self.source_status.update(connected=True,quality="good")
                     while not self.source_stop.is_set():
+                        if self.source_exhausted():
+                            self.source_status.update(quality='completed',connected=False);self.source_pause.set();return
                         await asyncio.sleep(.5);await client.check_connection()
             except asyncio.CancelledError:raise
             except Exception:
@@ -329,6 +379,7 @@ class Workbench:
         self.audit("task_"+action,actor,used=[tid],changes=[task]);return task
 
     def source_control(self,action,actor,speed=None):
+        if action in ('play','incident') and self.source_exhausted():raise ValueError('现场参考轨迹已发布完毕；请归档并重新载入，或查看历史与分析基线')
         if action=="pause":self.source_pause.set()
         elif action=="play":self.target.value=-1;self.source_pause.clear()
         elif action=="incident":self.target.value=-2;self.source_pause.clear()
@@ -342,4 +393,24 @@ class Workbench:
             spec=spec_from_graph(runtime.graph).model_dump() if runtime else default_spec().model_dump(),
             runtime=runtime.summary() if runtime else None,tasks=self.tasks()[:30],
             checkpoints=sorted(self.catalog.entities("Checkpoint"),key=lambda r:r["created_at"],reverse=True),
-            workspaces=self.catalog.entities("Workspace"),source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value},fingerprint=self.signer.fingerprint)
+            workspaces=self.catalog.entities("Workspace"),source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value,"exhausted":self.source_exhausted()},preparation=self.preparation(),fingerprint=self.signer.fingerprint)
+
+    def source_exhausted(self):
+        ws=self.active()
+        return bool(ws and 'trace_end_cursor' in ws and ws['cursor']>=ws['trace_end_cursor'])
+
+    def preparation(self):
+        ws=self.active()
+        if not ws:return None
+        if self.source_exhausted():
+            return {'status':'complete','source_cursor':ws['cursor'],'message':'本轮参考轨迹已全部发布。可以查看历史、创建分析基线，或归档后从头载入。'}
+        if ws.get('trace_path'):
+            return {'status':'ready' if self.source_status['connected'] and ws['cursor']>=0 else 'connecting',
+                    'task_id':None,'source_cursor':ws['cursor'],'message':'现场数据已接入' if ws['cursor']>=0 else '正在建立 MES 与 OPC UA 接入'}
+        task=next((t for t in self.tasks() if t['workspace']==ws['id'] and t['kind']=='baseline'),None)
+        if not task:return {'status':'interrupted','message':'没有可用的数据源轨迹，请重试'}
+        payload=json.loads(task['payload']);horizon=payload['spec']['horizon_s']
+        return dict(status=task['status'],task_id=task['id'],time_s=task['time_s'],horizon_s=horizon,
+                    percent=min(99.,100*task['time_s']/horizon),updated_at=task.get('updated_at',task['created_at']),
+                    elapsed_s=max(0.,(datetime.now(timezone.utc)-datetime.fromisoformat(task['created_at'])).total_seconds()),
+                    message=task.get('error','正在计算并核对参考轨迹，完成后自动接入现场数据'))
