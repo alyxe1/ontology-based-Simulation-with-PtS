@@ -8,12 +8,12 @@ if not exist "%MM%" (
   echo Install micromamba, or update MM in this file to its existing location.
   exit /b 1
 )
-call "%MM%" run -n ontologysim python -c "import sys; assert sys.version_info[:2] == (3,12)" >nul 2>nul
+call "%MM%" run -n ontologysim-v02 python -c "import sys; assert sys.version_info[:2] == (3,12)" >nul 2>nul
 if errorlevel 1 (
-  call "%MM%" create -n ontologysim -c conda-forge python=3.12.15 pip -y
+  call "%MM%" create -n ontologysim-v02 -c conda-forge python=3.12.15 pip -y
   if errorlevel 1 exit /b 1
 )
-call "%MM%" run -n ontologysim python -m pip install -r requirements.lock.txt
+call "%MM%" run -n ontologysim-v02 python -m pip install -r requirements.lock.txt
 if errorlevel 1 exit /b 1
 pushd frontend
 call npm ci --no-audit --no-fund

@@ -1,0 +1,64 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix sosa: <http://www.w3.org/ns/sosa/> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix iof: <https://spec.industrialontologies.org/ontology/construct/> .
+
+os:Ontology a owl:Ontology; owl:versionInfo "2.0"; rdfs:label "柔性机加工运行本体" .
+os:Equipment a owl:Class; skos:closeMatch iof:PieceOfEquipment; rdfs:label "设备" .
+os:Capability a owl:Class; rdfs:label "设备资格" .
+os:Product a owl:Class; rdfs:label "产品版本" .
+os:BillOfMaterial a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "毛坯物料清单" .
+os:ProductionPlan a owl:Class; rdfs:subClassOf prov:Plan; skos:closeMatch iof:PlanSpecification; rdfs:label "生产计划" .
+os:OperationPlan a owl:Class; rdfs:subClassOf prov:Plan; rdfs:label "工艺步骤" .
+os:WorkOrder a owl:Class; rdfs:label "生产订单" .
+os:Batch a owl:Class; rdfs:label "生产批次" .
+os:MaterialLot a owl:Class; rdfs:label "原料批次" .
+os:MaterialBalance a owl:Class; rdfs:label "物料结存" .
+os:Workpiece a owl:Class; rdfs:label "工件" .
+os:FixturePool a owl:Class; rdfs:label "夹具池" .
+os:FixtureReservation a owl:Class; rdfs:label "夹具预留" .
+os:AssetState a owl:Class; rdfs:label "设备运行状态" .
+os:Execution a owl:Class; rdfs:subClassOf prov:Activity; skos:closeMatch iof:PlannedProcess; rdfs:label "工序执行" .
+os:ScheduledEvent a owl:Class; rdfs:label "待执行事件" .
+os:Clock a owl:Class; rdfs:label "运行时钟" .
+os:Policy a owl:Class; rdfs:subClassOf prov:Plan; rdfs:label "决策规则" .
+os:SourceRecord a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "来源记录" .
+os:SourceGeneration a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "数据生成记录" .
+os:Observation a owl:Class; rdfs:subClassOf sosa:Observation; rdfs:label "设备观测" .
+os:Mapping a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "实体与字段映射" .
+os:Checkpoint a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "分析基线" .
+os:Scenario a owl:Class; rdfs:subClassOf prov:Plan; rdfs:label "预测方案" .
+os:RunResult a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "运行结果" .
+os:Command a owl:Class; rdfs:label "原生执行意图" .
+os:Inspection a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "检验结果" .
+os:BusinessRevision a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "业务修订" .
+os:OntologyVersion a owl:Class; rdfs:subClassOf prov:Entity; rdfs:label "本体契约版本" .
+os:product a owl:ObjectProperty; rdfs:label "对应产品" .
+os:order a owl:ObjectProperty; rdfs:label "属于订单" .
+os:batch a owl:ObjectProperty; rdfs:label "属于批次" .
+os:material_lot a owl:ObjectProperty; rdfs:label "使用原料批次" .
+os:operations a owl:ObjectProperty; rdfs:label "具有工序" .
+os:capabilities a owl:ObjectProperty; rdfs:label "具备资格" .
+os:resource a owl:ObjectProperty; rdfs:label "使用设备" .
+os:fixture a owl:ObjectProperty; rdfs:label "要求夹具" .
+os:preferred a owl:ObjectProperty; rdfs:label "首选设备" .
+os:execution a owl:ObjectProperty; rdfs:label "当前执行" .
+os:job a owl:ObjectProperty; rdfs:label "关联工件" .
+os:bom a owl:ObjectProperty; rdfs:label "采用物料清单" .
+os:product rdfs:domain [a owl:Class; owl:unionOf (os:Workpiece os:Batch os:WorkOrder os:OperationPlan os:BillOfMaterial)]; rdfs:range os:Product .
+os:order rdfs:domain [a owl:Class; owl:unionOf (os:Workpiece os:Batch)]; rdfs:range os:WorkOrder .
+os:batch rdfs:domain [a owl:Class; owl:unionOf (os:Workpiece os:Inspection)]; rdfs:range os:Batch .
+os:material_lot rdfs:domain [a owl:Class; owl:unionOf (os:Workpiece os:Batch os:WorkOrder os:MaterialBalance os:Inspection)]; rdfs:range os:MaterialLot .
+os:operations rdfs:domain os:Product; rdfs:range os:OperationPlan .
+os:capabilities rdfs:domain os:Equipment; rdfs:range os:Capability .
+os:resource rdfs:domain [a owl:Class; owl:unionOf (os:Execution os:AssetState os:FixtureReservation os:ScheduledEvent os:Scenario)]; rdfs:range os:Equipment .
+os:fixture rdfs:domain [a owl:Class; owl:unionOf (os:OperationPlan os:FixtureReservation)]; rdfs:range os:FixturePool .
+os:preferred rdfs:domain os:OperationPlan; rdfs:range os:Equipment .
+os:execution rdfs:domain [a owl:Class; owl:unionOf (os:Workpiece os:Inspection)]; rdfs:range os:Execution .
+os:job rdfs:domain [a owl:Class; owl:unionOf (os:Execution os:FixtureReservation os:ScheduledEvent os:Scenario os:Inspection)]; rdfs:range os:Workpiece .
+os:bom rdfs:domain os:Product; rdfs:range os:BillOfMaterial .
+os:operation_plan a owl:ObjectProperty; rdfs:label "执行工序"; rdfs:domain os:Execution; rdfs:range os:OperationPlan .
+os:operation a owl:DatatypeProperty; rdfs:label "工序类型代码" .

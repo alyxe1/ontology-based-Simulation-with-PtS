@@ -1,0 +1,22 @@
+{
+  "valid": true,
+  "records": 244,
+  "head": "4a16c4e64a0089a51122197b14a00abb68a25cdeb35f0ecd47514affd5f9452e",
+  "errors": [],
+  "independently_anchored": true,
+  "assurance": "应用层只追加；独立指纹和回执用于检测整体替换及历史截断",
+  "ontology": {
+    "valid": true,
+    "records": 244,
+    "head": "4a16c4e64a0089a51122197b14a00abb68a25cdeb35f0ecd47514affd5f9452e",
+    "errors": [],
+    "independently_anchored": true,
+    "assurance": "应用层只追加；独立指纹和回执用于检测整体替换及历史截断",
+    "state_matches_journal": true,
+    "schema_sealed": true,
+    "schema_matches_contract": true,
+    "provenance_matches_signed_content": true,
+    "provenance_sealed_commits": 244,
+    "provenance_total_commits": 244
+  }
+}

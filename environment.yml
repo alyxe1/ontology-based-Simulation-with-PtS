@@ -1,4 +1,4 @@
-name: ontologysim
+name: ontologysim-v02
 channels: [conda-forge]
 dependencies:
   - python=3.12.15

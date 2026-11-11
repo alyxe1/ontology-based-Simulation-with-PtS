@@ -1,0 +1,36 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+os:ProductShape a sh:NodeShape; sh:targetClass os:Product;
+ sh:property [sh:path os:operations; sh:minCount 1; sh:class os:OperationPlan];
+ sh:property [sh:path os:bom; sh:minCount 1; sh:maxCount 1; sh:class os:BillOfMaterial] .
+os:OperationShape a sh:NodeShape; sh:targetClass os:OperationPlan;
+ sh:property [sh:path os:duration_s; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0];
+ sh:property [sh:path os:preferred; sh:minCount 1; sh:maxCount 1; sh:class os:Equipment];
+ sh:property [sh:path os:product; sh:minCount 1; sh:maxCount 1; sh:class os:Product] .
+os:WorkpieceShape a sh:NodeShape; sh:targetClass os:Workpiece;
+ sh:property [sh:path os:location; sh:minCount 1; sh:maxCount 1];
+ sh:property [sh:path os:batch; sh:minCount 1; sh:maxCount 1; sh:class os:Batch];
+ sh:property [sh:path os:product; sh:minCount 1; sh:maxCount 1; sh:class os:Product];
+ sh:property [sh:path os:order; sh:minCount 1; sh:maxCount 1; sh:class os:WorkOrder] .
+os:BatchShape a sh:NodeShape; sh:targetClass os:Batch;
+ sh:property [sh:path os:material_lot; sh:minCount 1; sh:maxCount 1; sh:class os:MaterialLot] .
+os:EventShape a sh:NodeShape; sh:targetClass os:ScheduledEvent;
+ sh:property [sh:path os:due_s; sh:minCount 1; sh:maxCount 1; sh:minInclusive 0];
+ sh:property [sh:path os:status; sh:in ("pending" "completed" "cancelled")] .
+os:ExecutionShape a sh:NodeShape; sh:targetClass os:Execution;
+ sh:property [sh:path os:resource; sh:minCount 1; sh:maxCount 1; sh:class os:Equipment];
+ sh:property [sh:path os:start_s; sh:minCount 1; sh:maxCount 1; sh:lessThanOrEquals os:end_s];
+ sh:property [sh:path os:end_s; sh:minCount 1; sh:maxCount 1] .
+os:AssetShape a sh:NodeShape; sh:targetClass os:AssetState;
+ sh:property [sh:path os:resource; sh:minCount 1; sh:maxCount 1; sh:class os:Equipment];
+ sh:property [sh:path os:tool_count; sh:minCount 1; sh:minInclusive 0];
+ sh:property [sh:path os:status; sh:in ("idle" "setup" "processing" "maintenance")] .
+os:MaterialBalanceShape a sh:NodeShape; sh:targetClass os:MaterialBalance;
+ sh:property [sh:path os:material_lot; sh:class os:MaterialLot; sh:minCount 1];
+ sh:property [sh:path os:available; sh:minInclusive 0; sh:minCount 1];
+ sh:property [sh:path os:consumed; sh:minInclusive 0; sh:minCount 1] .
+os:FixtureShape a sh:NodeShape; sh:targetClass os:FixtureReservation;
+ sh:property [sh:path os:fixture; sh:class os:FixturePool; sh:minCount 1];
+ sh:property [sh:path os:job; sh:class os:Workpiece; sh:minCount 1];
+ sh:property [sh:path os:status; sh:in ("reserved" "released")] .
