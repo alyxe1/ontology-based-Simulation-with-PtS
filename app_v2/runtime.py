@@ -155,6 +155,14 @@ class OntologyRuntime:
             job.update(attempt=1,op_index=product["rework_index"])
         elif failed:
             job.update(status="scrapped",location="scrap",assigned="",completed_at=self.time,execution="")
+        elif product.get('route_encoding')=='linked':
+            successor=op.get('next_operation')
+            if successor:
+                next_op=self.graph.get(successor)
+                if not next_op or next_op['product']!=product['id'] or next_op['index']!=op['index']+1:raise ValueError('工艺后继与已核对路线不一致')
+                job['op_index']=next_op['index']
+            elif op['index']==len(product['operations'])-1:job['op_index']=len(product['operations'])
+            else:raise ValueError('非末道工序缺少后继')
         else:job["op_index"]+=1
         if job["status"]!="scrapped" and job["op_index"]>=len(product["operations"]):
             job.update(status="done",location="finished",assigned="",completed_at=self.time,execution="")

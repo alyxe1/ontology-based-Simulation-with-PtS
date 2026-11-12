@@ -62,3 +62,6 @@ os:job rdfs:domain [a owl:Class; owl:unionOf (os:Execution os:FixtureReservation
 os:bom rdfs:domain os:Product; rdfs:range os:BillOfMaterial .
 os:operation_plan a owl:ObjectProperty; rdfs:label "执行工序"; rdfs:domain os:Execution; rdfs:range os:OperationPlan .
 os:operation a owl:DatatypeProperty; rdfs:label "工序类型代码" .
+os:next_operation a owl:ObjectProperty, owl:FunctionalProperty;
+ rdfs:label "下一道工序"; rdfs:domain os:OperationPlan; rdfs:range os:OperationPlan .
+os:index a owl:DatatypeProperty; rdfs:label "工序顺序号"; rdfs:domain os:OperationPlan .

@@ -35,6 +35,7 @@ def test_auth_roles_and_csrf(web):
     assert web.post('/api/v2/users',json=dict(username='audit',password='audit-only-password',name='Auditor',role='auditor')).status_code==200
     web.post('/api/v2/logout');web.post('/api/v2/login',json=dict(username='audit',password='audit-only-password'))
     assert web.post('/api/v2/workspaces',json={}).status_code==403
+    assert web.post('/api/v2/reset',json={'confirm':'清空工作台'}).status_code==403
     assert web.get('/api/v2/state').status_code==200
     assert web.post('/api/v2/logout',headers={'x-ontologysim':'wrong'}).status_code==403
     assert web.post('/api/v2/logout',headers={'Origin':'https://unexpected.test'}).status_code==403
@@ -61,6 +62,50 @@ def test_live_baseline_isolation_and_lineage(web):
     assert web.get('/api/v2/replay',params={'sequence':3}).status_code==200
     task=w.tasks()[0]
     assert web.get('/api/v2/state',params={'context':task['id']}).status_code==400
+
+
+def test_replay_freezes_real_observation_boundaries(web):
+    w=initialize(web);feed(w);feed(w,1,10)
+    timeline=web.get('/api/v2/replay/timeline').json()
+    assert [f['time_s'] for f in timeline['frames']]==[0,10]
+    feed(w,2,20)
+    frame=web.get('/api/v2/replay/frame',params={'index':1,'head':timeline['head']}).json()
+    assert frame['time_s']==10 and frame['total']==2 and len(frame['equipment'])==6
+    assert len(frame['jobs'])==120 and frame['jobs'][0]['operation_name']=='毛坯下料'
+    assert web.get('/api/v2/replay/frame',params={'index':2,'head':timeline['head']}).status_code==400
+    assert w.graph().get('clock')['time_s']==20
+
+
+def test_remove_baseline_and_reset_leave_empty_workbench_with_signed_history(web):
+    w=initialize(web);feed(w)
+    assert web.post('/api/v2/reset',json={'confirm':'清空工作台'}).status_code==400 # queued native work
+    for t in w.tasks():web.post(f"/api/v2/tasks/{t['id']}/cancel",json={})
+    checkpoint=web.post('/api/v2/checkpoints').json()
+    assert web.delete('/api/v2/contexts/'+checkpoint['id']).status_code==200
+    assert web.post('/api/v2/compare',json={'checkpoint_id':checkpoint['id']}).status_code==400
+    assert web.get('/api/v2/state').json()['checkpoints']==[]
+    assert web.post('/api/v2/reset',json={'confirm':'清空工作台'}).status_code==200
+    state=web.get('/api/v2/state').json()
+    assert state['workspace'] is None and state['runtime'] is None
+    assert not (state['workspaces'] or state['checkpoints'] or state['tasks'])
+    assert web.get('/api/v2/session').json()['user']['role']=='admin'
+    assert w.catalog.verify()['valid']
+    assert checkpoint['id'] in {r['id'] for r in w.catalog.entities('Checkpoint')}
+    assert all(r['payload']['sequence']>=state['reset']['sequence_after'] for r in web.get('/api/v2/history?context=catalog').json()['records'])
+
+
+def test_remove_current_workspace_keeps_unrelated_archive(web):
+    w=initialize(web)
+    old=w.active()['id']
+    for t in w.tasks():web.post(f"/api/v2/tasks/{t['id']}/cancel",json={})
+    initialize(web);current=w.active()['id']
+    assert web.delete('/api/v2/contexts/'+current).status_code==400
+    for t in w.tasks():
+        if t['workspace']==current:web.post(f"/api/v2/tasks/{t['id']}/cancel",json={})
+    assert web.delete('/api/v2/contexts/'+current).status_code==200
+    state=web.get('/api/v2/state').json()
+    assert state['workspace'] is None and [r['id'] for r in state['workspaces']]==[old]
+    assert web.get('/api/v2/state',params={'context':old}).json()['runtime']
 
 def test_revision_export_and_immutable_entities(web):
     w=initialize(web);feed(w)

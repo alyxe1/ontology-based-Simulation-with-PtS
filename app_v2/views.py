@@ -1,55 +1,132 @@
 """Bounded business views and evidence traversal over the same ontology records."""
 from collections import deque
 from .graph import Ref, PROV, SCHEMA, decode
-from .specification import qualification
 
-LABELS={"Equipment":"设备","Capability":"资格","Product":"产品","BillOfMaterial":"毛坯 BOM","OperationPlan":"工序","WorkOrder":"订单","Batch":"生产批次","MaterialLot":"原料批次","Workpiece":"工件","Execution":"执行","Inspection":"检验","FixturePool":"夹具","AssetState":"运行状态","Policy":"规则","Scenario":"方案","MaterialBalance":"物料结存","FixtureReservation":"夹具占用"}
-RELATIONS={"product":"对应产品","order":"属于订单","batch":"属于批次","material_lot":"原料来源","operations":"工艺步骤","capabilities":"设备资格","resource":"加工设备","fixture":"所需夹具","preferred":"首选设备","execution":"当前执行","operation":"执行工序","job":"工件","bom":"物料清单","assigned":"当前指派","location":"当前位置"}
+LABELS={
+    "Equipment":"设备","Capability":"设备资格","Product":"产品版本","BillOfMaterial":"毛坯 BOM",
+    "OperationPlan":"工序","WorkOrder":"生产订单","Batch":"生产批次","MaterialLot":"原料批次",
+    "Workpiece":"工件","Execution":"实际工序执行","Inspection":"检验结果","FixturePool":"夹具",
+    "AssetState":"设备状态","Policy":"决策规则","Scenario":"推演方案","MaterialBalance":"物料结存",
+    "FixtureReservation":"夹具占用","RunResult":"运行结果","ScheduledEvent":"计划事件"
+}
+RULE_TYPES={"OperationPlan","BillOfMaterial","Capability","Policy","ProductionPlan","Mapping"}
+ACTION_TYPES={"Scenario","RunResult","Command","ScheduledEvent","BusinessRevision"}
+RELATIONS={"product":"对应产品","order":"属于订单","batch":"属于批次","material_lot":"原料来源",
+           "operations":"具有工序","next_operation":"下一道工序","capabilities":"设备资格","resource":"使用设备",
+           "fixture":"所需夹具","preferred":"首选设备","execution":"当前执行","operation":"执行工序",
+           "job":"关联工件","bom":"物料清单","assigned":"当前指派","location":"当前位置"}
+
+def business_layer(kind):
+    # Actual executions and inspection outcomes are observations; plans and
+    # unexecuted commands are not presented as things that have happened.
+    return "事理" if kind in RULE_TYPES else "行动" if kind in ACTION_TYPES else "事实"
+
+def edge(source,target,key,label=None,derived=False):
+    return dict(id=f'{source}|{key}|{target}', **{'from':str(source),'to':str(target)},
+                predicate=key,label=label or RELATIONS[key],derived=derived)
+
+def product_route(graph,focus):
+    row=graph.get(focus)
+    product_id=(row['id'] if row['type']=='Product' else row.get('product')) if row else None
+    product=graph.get(product_id) if product_id else None
+    if not product:product=next(iter(graph.entities('Product')),None)
+    if not product:return None
+    steps=sorted((graph.get(i) for i in product['operations']),key=lambda r:r['index'])
+    return dict(product=product['id'],name=product['name'],steps=[{
+        'id':r['id'],'name':r['name'],'index':r['index'],'duration_s':r['duration_s'],'preferred':str(r['preferred']),
+        'operation':r['operation'],'next_operation':str(r.get('next_operation') or
+            (steps[i+1]['id'] if i+1<len(steps) and product.get('route_encoding')!='linked' else ''))
+    } for i,r in enumerate(steps)],linked=product.get('route_encoding')=='linked',
+        rework_to=steps[product['rework_index']]['id'])
+
+def schema_view(graph,focus,limit,depth):
+    import pyoxigraph as ox
+    from rdflib import Graph, RDF, RDFS, OWL, URIRef
+    from rdflib.collection import Collection
+    from .common import NS
+    schema=Graph().parse(data=graph.store.dump(format=ox.RdfFormat.TURTLE,from_graph=SCHEMA),format="turtle")
+    classes={c for c in schema.subjects(RDF.type,OWL.Class) if isinstance(c,URIRef) and str(c).startswith(NS)}
+    key=lambda c:str(c).removeprefix(NS)
+    nodes={key(c):dict(id=key(c),label=str(schema.value(c,RDFS.label) or key(c)),kind="概念",layer=business_layer(key(c))) for c in classes}
+    edges=[]
+    def members(term):
+        union=schema.value(term,OWL.unionOf) if term else None
+        return list(Collection(schema,union)) if union else [term]
+    for prop in set(schema.subjects(RDF.type,OWL.ObjectProperty)):
+        for domain in members(schema.value(prop,RDFS.domain)):
+            for target in members(schema.value(prop,RDFS.range)):
+                if domain in classes and target in classes:
+                    edges.append(edge(key(domain),key(target),key(prop),str(schema.value(prop,RDFS.label) or key(prop))))
+    connected={e[side] for e in edges for side in ('from','to')}
+    # One connected neighbourhood; extension/technical terms remain in glossary.
+    core=('Product','OperationPlan','Equipment','Capability','Batch','WorkOrder','Execution','Workpiece','MaterialLot','BillOfMaterial','Inspection','AssetState','ScheduledEvent','Scenario','FixturePool')
+    root=focus if focus in connected else 'Product'
+    adj={k:set() for k in nodes}
+    for e in edges:adj[e['from']].add(e['to']);adj[e['to']].add(e['from'])
+    seen={root};ordered=[];queue=deque([(root,0)])
+    while queue and len(ordered)<min(limit,18):
+        node,level=queue.popleft()
+        if node not in nodes:continue
+        ordered.append(node)
+        if level>=depth:continue
+        for item in sorted(adj[node],key=lambda k:(k not in core,k)):
+            if item not in seen:seen.add(item);queue.append((item,level+1))
+    shown=set(ordered)
+    return dict(nodes=[{**nodes[i],'focused':i==root} for i in ordered],
+        edges=sorted((e for e in edges if e['from'] in shown and e['to'] in shown),key=lambda e:e['id']),
+        glossary=[nodes[i] for i in sorted(nodes) if i not in shown],total=len(nodes),omitted=len(nodes)-len(shown),focus=root,view='schema')
 
 def focused_graph(runtime,focus="",depth=1,limit=40,view="relations",expand=False,relation=""):
     graph=runtime.graph
-    if view=="schema":
-        from rdflib import Graph, RDF, RDFS, OWL, URIRef
-        from rdflib.collection import Collection
-        from .common import NS
-        import pyoxigraph as ox
-        schema=Graph().parse(data=graph.store.dump(format=ox.RdfFormat.TURTLE,from_graph=SCHEMA),format="turtle")
-        classes=[c for c in schema.subjects(RDF.type,OWL.Class) if isinstance(c,URIRef) and str(c).startswith(NS)]
-        rows=[dict(id=str(c).removeprefix(NS),label=str(schema.value(c,RDFS.label)),kind="概念") for c in classes];edges=[]
-        for prop in schema.subjects(RDF.type,OWL.ObjectProperty):
-            domain=schema.value(prop,RDFS.domain);target=schema.value(prop,RDFS.range)
-            domains=list(Collection(schema,schema.value(domain,OWL.unionOf))) if domain and schema.value(domain,OWL.unionOf) else [domain]
-            for source in domains:
-                if source in classes and target in classes:edges.append(dict(id=str(prop)+str(source),**{"from":str(source).removeprefix(NS),"to":str(target).removeprefix(NS)},label=str(schema.value(prop,RDFS.label))))
-        shown={r['id'] for r in rows[:limit]}
-        return dict(nodes=rows[:limit],edges=[e for e in edges if e['from'] in shown and e['to'] in shown],total=len(rows),omitted=max(0,len(rows)-limit),focus=focus,view=view)
-    records={r["id"]:r for kind in LABELS for r in graph.entities(kind)}
-    if not expand:
-        records={k:r for k,r in records.items() if r["type"] not in ("Workpiece","Execution","FixtureReservation","Inspection") or k==focus}
-    if not focus or focus not in records:
-        focus=next((r["id"] for r in records.values() if r["type"]=="Batch"),next(iter(records),""))
+    if view=="schema":return schema_view(graph,focus,limit,depth)
+    if view=='impact' and not focus:
+        focus=next((r['id'] for r in graph.find('AssetState',status='maintenance')),'')
+    route=product_route(graph,focus)
+    if view=='route':return dict(route=route,view=view,nodes=[],edges=[])
+    kinds=set(LABELS)-{'ScheduledEvent'}
+    if not expand:kinds-={'Workpiece','Execution','FixtureReservation','Inspection'}
+    records={r['id']:r for kind in sorted(kinds) for r in graph.entities(kind)}
+    focused=graph.get(focus)
+    if focused and focused.get('type') in LABELS:records[focus]=focused
+    if focus not in records:focus=route['product'] if route else next(iter(records),'')
+    if not focus:return dict(nodes=[],edges=[],total=0,omitted=0,focus='',view=view)
     all_edges=[];adj={k:set() for k in records}
+    def add(source,target,key,derived=False,label=None):
+        if target in records and (not relation or key==relation):
+            all_edges.append(edge(source,target,key,label,derived))
+            adj[source].add(str(target));adj[target].add(source)
     for r in records.values():
         for key,value in r.items():
-            if key not in RELATIONS or relation and key!=relation:continue
-            for target in value if isinstance(value,list) else [value]:
-                if isinstance(target,Ref) and target in records:
-                    all_edges.append(dict(id=r["id"]+"|"+key+"|"+target,**{"from":r["id"],"to":str(target)},label=RELATIONS[key],predicate=key))
-                    adj[r["id"]].add(str(target));adj[target].add(r["id"])
-    visited={focus};front=deque([(focus,0)])
+            if key in RELATIONS:
+                for target in value if isinstance(value,list) else [value]:
+                    if isinstance(target,Ref):add(r['id'],target,key)
+    if route and not route['linked']:
+        for step in route['steps']:
+            if step['id'] in records and step['next_operation']:
+                add(step['id'],step['next_operation'],'next_operation',True)
+    if view=='impact':
+        # Show the decision rules tied to the selected event, with explicit view provenance.
+        for r in list(records.values()):
+            if r['type']=='AssetState' and r['status']=='maintenance':
+                add(r['id'],'rule/maintenance-v1','rule',True,'适用维护规则')
+                add(r['id'],'policy','action',True,'评估排程策略')
+    if 'analysis_basis' in records:
+        add('analysis_basis','policy','action',True,'应用排程策略')
+        for r in records.values():
+            if r['type']=='RunResult':add(r['id'],'analysis_basis','action',True,'核对方案结果')
+    visited={focus};ordered=[focus];front=deque([(focus,0)])
     while front:
         identity,level=front.popleft()
         if level>=depth:continue
-        for neighbor in sorted(adj.get(identity,())):
-            if neighbor not in visited:visited.add(neighbor);front.append((neighbor,level+1))
-    ordered=[focus]+sorted(visited-{focus});shown=ordered[:limit];ids=set(shown)
-    nodes=[]
-    for identity in shown:
-        row=records[identity];label=row.get("name",identity)
-        nodes.append(dict(id=identity,label=label,kind=LABELS.get(row["type"],row["type"]),type=row["type"],focused=identity==focus,
-            layer="事理" if row["type"] in ("Product","OperationPlan","BillOfMaterial","Capability","Policy") else "行动" if row["type"] in ("Scenario","Execution") else "事实"))
-    return dict(nodes=nodes,edges=[e for e in all_edges if e["from"] in ids and e["to"] in ids],total=len(visited),omitted=max(0,len(visited)-limit),focus=focus,view=view,
-                aggregated_workpieces=sum(j["batch"]==focus or j["product"]==focus or j["order"]==focus for j in runtime.jobs()) if not expand else 0)
+        for neighbor in sorted(adj[identity],key=lambda k:(records[k]['type'] not in ('Product','OperationPlan','AssetState'),records[k].get('index',0),k)):
+            if neighbor not in visited:visited.add(neighbor);ordered.append(neighbor);front.append((neighbor,level+1))
+    shown=ordered[:limit];ids=set(shown)
+    nodes=[dict(id=i,label=records[i].get('name',i),kind=LABELS[records[i]['type']],type=records[i]['type'],focused=i==focus,
+                layer='行动' if view=='impact' and i=='policy' else business_layer(records[i]['type']),
+                status=records[i].get('status')) for i in shown]
+    return dict(nodes=nodes,edges=sorted((e for e in all_edges if e['from'] in ids and e['to'] in ids),key=lambda e:e['id']),
+                total=len(visited),omitted=max(0,len(visited)-limit),focus=focus,view=view,sequence=graph.sequence,
+                aggregated_workpieces=sum(j['batch']==focus or j['product']==focus or j['order']==focus for j in runtime.jobs()) if not expand else 0)
 
 def lineage(graph,identity,limit=30):
     # Scan lightweight PROV relations to locate only relevant version activities.

@@ -142,11 +142,12 @@ def spec_records(spec):
             cid=f"{r.id}/cap/{i}"; row["capabilities"].append(Ref(cid)); rows.append(dict(id=cid,type="Capability",**c.model_dump()))
         rows.append(row)
     for ordinal,p in enumerate(spec.products):
-        row=p.model_dump(exclude={"operations"});row.update(type="Product",operations=[],bom=Ref(p.id+"/bom"),ordinal=ordinal)
+        row=p.model_dump(exclude={"operations"});row.update(type="Product",operations=[],bom=Ref(p.id+"/bom"),ordinal=ordinal,route_encoding="linked")
         rows.append(dict(id=p.id+"/bom",type="BillOfMaterial",product=Ref(p.id),material=p.material,quantity=1,unit="piece",blank_kg=p.blank_kg,finished_kg=p.finished_kg))
         for i,op in enumerate(p.operations):
             oid=f"{p.id}/{op.id}";row["operations"].append(Ref(oid));o=op.model_dump();o["id"]=oid
             o.update(type="OperationPlan",index=i,product=Ref(p.id),material=p.material,preferred=Ref(op.preferred))
+            if i+1<len(p.operations):o['next_operation']=Ref(f'{p.id}/{p.operations[i+1].id}')
             if op.fixture:o["fixture"]=Ref(op.fixture)
             rows.append(o)
         rows.append(row)
@@ -196,4 +197,10 @@ def validate_ontology(graph):
     data=Graph()
     data.parse(data=graph.store.dump(format=__import__('pyoxigraph').RdfFormat.TURTLE,from_graph=STATE),format="turtle")
     conforms,report,text=validate(data,shacl_graph=str(BASE/"ontology/v2/shapes.ttl"),inference="rdfs")
-    return {"conforms":bool(conforms),"report":text}
+    from rdflib import Namespace, RDF
+    sh=Namespace('http://www.w3.org/ns/shacl#')
+    issues=[]
+    for result in report.subjects(RDF.type,sh.ValidationResult):
+        issues.append({key:str(report.value(result,prop) or '').removeprefix('urn:ontologysim:v2:')
+                       for key,prop in [('object',sh.focusNode),('path',sh.resultPath),('message',sh.resultMessage)]})
+    return {"conforms":bool(conforms),"report":text,"issues":issues,"checks":["引用及数量","工艺顺序及首选设备资格","执行时间和设备状态","物料与夹具字段"]}

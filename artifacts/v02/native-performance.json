@@ -1,0 +1,52 @@
+{
+  "before": {
+    "steps": 267,
+    "seconds": 124.606,
+    "visible": false,
+    "clock": 4829.259892,
+    "completed": 4,
+    "state_digest": "ffb8a0808eb6b0f15bad8e6bb5a0ab2d49f6aeb162b53c336dcb06f59839cc94",
+    "verified": true
+  },
+  "after": {
+    "steps": 267,
+    "seconds": 57.43,
+    "visible": true,
+    "clock": 4829.259892,
+    "completed": 4,
+    "state_digest": "ffb8a0808eb6b0f15bad8e6bb5a0ab2d49f6aeb162b53c336dcb06f59839cc94",
+    "verified": true
+  },
+  "same_state": true,
+  "default_reference": {
+    "frames": 958,
+    "verified": true,
+    "seconds": 228.054,
+    "speed": 100,
+    "real_time": false,
+    "model_contract": "edccd4d2f9b9103230ae97b368825ae07b4c30a37971eb8db7a248fb46359203"
+  },
+  "visible_comparison": [
+    {
+      "name": "改派 + 延长班次",
+      "completed": 6,
+      "business_seconds": 2000.0,
+      "wall_seconds": 10.4,
+      "native_visible": true
+    },
+    {
+      "name": "维持 FIFO",
+      "completed": 3,
+      "business_seconds": 2000.0,
+      "wall_seconds": 10.1,
+      "native_visible": true
+    },
+    {
+      "name": "合格设备改派 + EDD",
+      "completed": 6,
+      "business_seconds": 2000.0,
+      "wall_seconds": 10.5,
+      "native_visible": true
+    }
+  ]
+}

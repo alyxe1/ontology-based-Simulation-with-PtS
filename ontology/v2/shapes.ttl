@@ -5,9 +5,32 @@ os:ProductShape a sh:NodeShape; sh:targetClass os:Product;
  sh:property [sh:path os:operations; sh:minCount 1; sh:class os:OperationPlan];
  sh:property [sh:path os:bom; sh:minCount 1; sh:maxCount 1; sh:class os:BillOfMaterial] .
 os:OperationShape a sh:NodeShape; sh:targetClass os:OperationPlan;
+ sh:property [sh:path os:index; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:integer; sh:minInclusive 0; sh:message "工序必须有唯一非负顺序号。"];
+ sh:property [sh:path os:next_operation; sh:maxCount 1; sh:class os:OperationPlan; sh:message "工序只能有一个正常后继，且后继必须是工序。"];
  sh:property [sh:path os:duration_s; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0];
  sh:property [sh:path os:preferred; sh:minCount 1; sh:maxCount 1; sh:class os:Equipment];
- sh:property [sh:path os:product; sh:minCount 1; sh:maxCount 1; sh:class os:Product] .
+ sh:property [sh:path os:product; sh:minCount 1; sh:maxCount 1; sh:class os:Product];
+ sh:sparql [sh:message "工序归属错误、顺序重复或缺少上一道工序。"; sh:select """
+ PREFIX os: <urn:ontologysim:v2:>
+ SELECT $this WHERE {
+  $this os:product ?p; os:index ?i .
+  FILTER(NOT EXISTS { ?p os:operations $this }
+   || EXISTS { ?other os:product ?p; os:index ?i . FILTER(?other != $this) }
+   || (?i > 0 && NOT EXISTS { ?p os:operations ?prev . ?prev os:index ?j . FILTER(?j = ?i - 1) }))
+ }"""];
+ sh:sparql [sh:message "工艺链后继缺失，或后继跨产品、跳步、形成回路。"; sh:select """
+ PREFIX os: <urn:ontologysim:v2:>
+ SELECT $this WHERE {
+  $this os:product ?p; os:index ?i .
+  FILTER(EXISTS { $this os:next_operation ?n . FILTER NOT EXISTS { ?p os:operations ?n . ?n os:product ?p; os:index ?j . FILTER(?j = ?i + 1) } }
+   || EXISTS { ?p os:route_encoding "linked"; os:operations ?expected . ?expected os:index ?j . FILTER(?j = ?i + 1) FILTER NOT EXISTS { $this os:next_operation ?expected } })
+ }"""];
+ sh:sparql [sh:message "首选设备必须同时满足工序类型、材料及精度要求。"; sh:select """
+ PREFIX os: <urn:ontologysim:v2:>
+ SELECT $this WHERE {
+  $this os:preferred ?machine; os:operation ?op; os:material ?mat; os:tolerance_um ?required .
+  FILTER NOT EXISTS { ?machine os:capabilities ?cap . ?cap os:operation ?op; os:materials ?mat; os:tolerance_um ?actual . FILTER(?actual <= ?required) }
+ }"""] .
 os:WorkpieceShape a sh:NodeShape; sh:targetClass os:Workpiece;
  sh:property [sh:path os:location; sh:minCount 1; sh:maxCount 1];
  sh:property [sh:path os:batch; sh:minCount 1; sh:maxCount 1; sh:class os:Batch];

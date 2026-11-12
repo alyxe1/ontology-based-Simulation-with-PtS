@@ -112,6 +112,13 @@ def create_app(root=DATA, workers=True):
         if action=='retry':return await w.retry_source(actor(account))
         if action=='restart':return await w.create_workspace(spec_from_graph(runtime(w,'live').graph),actor(account))
         w.source_control(action,actor(account),body.get("speed"));return {"ok":True}
+    @app.post('/api/v2/reset')
+    async def reset(body:dict,account=Depends(administrator),w=Depends(workbench)):
+        if body.get('confirm')!='清空工作台':raise ValueError('请输入「清空工作台」确认重置')
+        return await w.reset(actor(account))
+    @app.delete('/api/v2/contexts/{identity}')
+    async def remove_context(identity:str,account=Depends(writer),w=Depends(workbench)):
+        return await w.remove_context(identity,actor(account))
     @app.post("/api/v2/internal/mes")
     async def mes(body:SourceRecordEnvelope,request:Request,w=Depends(workbench)):
         internal(request,w)
@@ -138,16 +145,14 @@ def create_app(root=DATA, workers=True):
     async def control(task_id:str,action:str,account=Depends(writer),w=Depends(workbench)):return w.task_control(task_id,action,actor(account))
     @app.get("/api/v2/tasks/{task_id}/result")
     async def result(task_id:str,account=Depends(user),w=Depends(workbench)):
-        task=w.catalog.get(task_id)
-        if not task or task["type"]!="Task":raise ValueError("任务不存在")
+        task=w.context_record(task_id,'Task')
         if task["kind"]=="baseline":raise HTTPException(403,"现场未来轨迹由数据源隔离保存")
         if task_id in w.progress:return {"task":task,"summary":w.progress[task_id],"native":json.loads(task.get("native","{}"))}
         return {"task":task,"summary":runtime(w,task_id).summary(),"native":json.loads(task.get("native","{}"))}
     @app.post("/api/v2/checkpoints/{checkpoint_id}/{action}")
     async def restore(checkpoint_id:str,action:str,account=Depends(writer),w=Depends(workbench)):
         if action not in ("restore","continuation","view"):raise ValueError("无效恢复操作")
-        cp=w.catalog.get(checkpoint_id)
-        if not cp or cp["type"]!="Checkpoint":raise ValueError("本体存档不存在")
+        cp=w.context_record(checkpoint_id,'Checkpoint')
         return w.submit(action,actor(account),str(cp["workspace"]),checkpoint=cp["path"],checkpoint_id=checkpoint_id)
     @app.get("/api/v2/qualification")
     async def candidates(operation:str,context="live",account=Depends(user),w=Depends(workbench)):return qualification(runtime(w,context).graph,operation)
@@ -175,7 +180,15 @@ def create_app(root=DATA, workers=True):
     @app.get("/api/v2/history")
     async def history(context="live",limit:int=Query(60,ge=1,le=200),account=Depends(user),w=Depends(workbench)):
         graph=w.catalog if context=="catalog" else runtime(w,context).graph
-        return {"head":graph.sequence,"hash":graph.head,"records":[{**r,"payload":{k:v for k,v in r["payload"].items() if k not in ("changes","provenance")}} for r in graph.records(limit=limit)]}
+        boundary=w.catalog.get('workspace_reset') if context=='catalog' else None
+        return {"head":graph.sequence,"hash":graph.head,"records":[{**r,"payload":{k:v for k,v in r["payload"].items() if k not in ("changes","provenance")}} for r in graph.records(after=boundary['sequence_after']-1 if boundary else 0,limit=limit)]}
+    @app.get('/api/v2/replay/timeline')
+    async def playback_timeline(context='live',account=Depends(user),w=Depends(workbench)):
+        index=w.playback(context)
+        return {'head':index.head,'frames':index.frames}
+    @app.get('/api/v2/replay/frame')
+    async def playback_frame(index:int=Query(...,ge=0),head:int=Query(...,ge=1),context='live',account=Depends(user),w=Depends(workbench)):
+        return w.playback(context,head).frame(index)
     @app.get("/api/v2/replay")
     async def replay(sequence:int=Query(...,ge=1),context="live",account=Depends(user),w=Depends(workbench)):
         graph=runtime(w,context).graph
@@ -214,7 +227,7 @@ def create_app(root=DATA, workers=True):
     async def publish(revision_id:str,account=Depends(writer),w=Depends(workbench)):
         row=w.catalog.get(revision_id);ws=w.active()
         if not row or row["type"]!="BusinessRevision" or not row["conforms"]:raise ValueError("修订不存在或未通过校验")
-        if row["workspace"]!=ws["id"] or row["base_revision"]!=ws["spec_revision"]:raise ValueError("主数据版本冲突，请重新校验")
+        if not ws or row["workspace"]!=ws["id"] or row["base_revision"]!=ws["spec_revision"]:raise ValueError("主数据版本冲突，请重新校验")
         task=await w.create_workspace(ProductionSpec.model_validate_json(row["specification"]),actor(account))
         w.audit("business_revision_published",actor(account),used=[revision_id,task["workspace"]]);return task
 
@@ -247,8 +260,9 @@ def create_app(root=DATA, workers=True):
     async def health(account=Depends(user),w=Depends(workbench)):
         return {"version":"0.2.0","worker_alive":bool(w.process and w.process.is_alive()),"native_owner":w.active_task,"source":w.source_status,"fingerprint":w.signer.fingerprint,"environment":"ontologysim-v02","storage":"Oxigraph / RDF authoritative state","program_id":"Tecnomatix.PlantSimulation.RemoteControl.26.6"}
     @app.get('/api/v2/legacy')
-    async def legacy(account=Depends(user)):
+    async def legacy(account=Depends(user),w=Depends(workbench)):
         import sqlite3
+        if w.catalog.get('workspace_reset'):return {'objects':[],'read_only':True,'notice':'已从新起点开始；旧版数据不进入当前工作台。'}
         path=BASE/'.runtime/workbench.sqlite'
         if not path.exists():return {'objects':[],'read_only':True,'notice':'未检测到 V0.1 历史库'}
         db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)

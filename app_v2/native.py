@@ -31,6 +31,7 @@ class PlantAdapter:
 str_to_obj(".InformationFlow.Method").createObject({SYS},850,420,"Wake")
 str_to_obj("{SYS}.Wake").Program := "var dummy: integer := 0"
 {EC}.RealTime := false
+{EC}.Speed := 100
 {EC}.End := {max(1,runtime.config['horizon_s']-self.origin)+1:.9f}''')
         for index,r in enumerate(runtime.graph.entities("Equipment")):
             frame=f"{SYS}.R{index}";self.paths[r["id"]]={"queue":frame+".Waiting","machine":frame+".Machine"}
@@ -97,14 +98,15 @@ return ""''')
 
     def step(self,runtime):
         self.engine.checkpoint_control();self.schedule(runtime)
+        before=runtime.time
         for _ in range(2000):
             self.engine.sim.StepSimulation(EC);self.engine.wait()
             at=self.origin+float(self.engine.sim.GetValue(EC+".SimTime"))
-            if at>runtime.time+EPS:break
+            if at>before+EPS:break
         else:raise RuntimeError("原生事件时钟无法推进")
         # All due station completions at this timestamp must be observed before dispatch.
+        due=[e for e in runtime.pending_events() if e["due_s"]<=at+EPS and e["event_kind"] in ("process_finished","setup_finished")]
         for _ in range(100):
-            due=[e for e in runtime.pending_events() if e["due_s"]<=at+EPS and e["event_kind"] in ("process_finished","setup_finished")]
             if all(self.finished(e["resource"]) for e in due):return round(at,6)
             self.engine.sim.StepSimulation(EC);self.engine.wait()
             observed=self.origin+float(self.engine.sim.GetValue(EC+".SimTime"))
@@ -138,7 +140,8 @@ return ""''')
         if scrap!=sum(j["status"]=="scrapped" for j in runtime.jobs()):diffs.append({"scrapped":scrap})
         if diffs:raise RuntimeError("原生与本体状态不一致: "+str(diffs))
         return dict(verified=True,clock_s=clock,origin_s=self.origin,native_clock_s=clock-self.origin,completed=finished,scrapped=scrap,
-                    locations=actual,engine=PROGID,owned_pid=self.engine.pid,restore_mode="direct-ontology-initialization",clock_tolerance_s=EPS)
+                    locations=actual,engine=PROGID,owned_pid=self.engine.pid,restore_mode="direct-ontology-initialization",clock_tolerance_s=EPS,
+                    window_visible=self.engine.shown, speed=self.engine.sim.GetValue(EC+'.Speed'), real_time=bool(self.engine.sim.GetValue(EC+'.RealTime')))
 
     def save(self,path):self.engine.sim.SaveModel(str(Path(path).resolve()))
     def close(self):self.engine.close()

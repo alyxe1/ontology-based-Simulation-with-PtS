@@ -44,7 +44,7 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
         native=None;graph=None;runtime=None;trace=None
         try:
             signer=Signer(key_path)
-            if task['kind']=='view':visible.set()
+            if task['kind'] in ('view','scenario','continuation'):visible.set()
             else:visible.clear()
             if task["kind"]=="baseline":
                 graph=OntologyStore(out/"ontology",signer)
@@ -57,8 +57,10 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
                 if "seed" in task:
                     clock=runtime.clock;clock["seed"]=task["seed"]
                     graph.commit([clock],"prediction_sample_selected",time_s=runtime.time,used=["policy"],reason="同一重复组采用配对样本，现场生成器使用独立种子")
+            graph.defer_non_intent_flush=True
             def native_emit(kind,data):emit(kind,{"task_id":task_id,**data})
             native=PlantAdapter(native_emit,cancel=cancel,visible=visible)
+            emit('phase',{'task_id':task_id,'phase':'opening_native'})
             initial=native.initialize(runtime)
             graph.commit([],"native_initialized",actor=task.get("actor","service/native"),time_s=runtime.time,used=["clock"],details=initial,
                 reason="由本体直接装载原生对象；原生本地时钟为零，无历史快进")
@@ -87,7 +89,7 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
                 runtime.advance(native);steps+=1
                 if trace:
                     trace.write(canonical(public_frame(runtime,previous,cursor))+"\n");cursor+=1
-                if steps%25==0:emit("progress",{"task_id":task_id,"summary":runtime.summary(),"phase":"running"})
+                if steps%25==0:emit("progress",{"task_id":task_id,"summary":runtime.summary(),"phase":"running","elapsed_s":round(time.monotonic()-started,1)})
                 if steps>20000 or time.monotonic()-started>1800:raise TimeoutError("原生运行超过受控预算")
             if trace:trace.flush();os.fsync(trace.fileno())
             evidence=native.verify(runtime)
@@ -95,7 +97,7 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
             graph.commit([result_record],"run_completed",actor="service/native",time_s=runtime.time,used=["policy","configuration","analysis_basis"],details=evidence)
             graph.export(out/"runtime.trig");native.save(out/"final.spp")
             summary=runtime.summary();atomic_write(out/"result.json",canonical({"summary":summary,"native":evidence}))
-            emit("done",{"task_id":task_id,"summary":summary,"native":evidence,"output":str(out)})
+            emit("done",{"task_id":task_id,"summary":summary,"native":evidence,"output":str(out),"elapsed_s":round(time.monotonic()-started,1)})
         except BaseException as ex:
             status="cancelled" if isinstance(ex,InterruptedError) else "failed"
             uncertain=bool(graph and any(c['status']!='acknowledged' for c in graph.entities('Command')))

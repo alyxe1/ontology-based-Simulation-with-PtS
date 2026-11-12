@@ -31,6 +31,7 @@ class Workbench:
         self.key_path=self.root/"signing-key.dpapi";self.signer=Signer(self.key_path)
         self.catalog=OntologyStore(self.root/"catalog",self.signer);self.accounts=Accounts(self.root/"accounts.sqlite")
         self.graphs={};self.views={};self.progress={};self.pending={};self.revision=0;self.active_task=None;self.shutdown=False
+        self.replay_views={};self.resetting=False
         self.source_token=secrets.token_urlsafe(32);self.source_pause=mp.Event();self.source_pause.set();self.source_stop=mp.Event()
         self.speed=mp.Value('d',600.);self.target=mp.Value('i',-1);self.publisher=None;self.opc_task=None
         self.source_status={"connected":False,"paused":True,"cursor":-1,"duplicates":0,"quality":"waiting","endpoint":"opc.tcp://127.0.0.1:4843/ontologysim-v2/","synthetic":True}
@@ -55,14 +56,78 @@ class Workbench:
             active=self.active()
             if not active:return None
             return OntologyRuntime(self.graph(active["id"]))
-        record=self.catalog.get(context)
-        if not record:raise ValueError("对象不存在")
+        record=self.context_record(context)
         if record.get("kind")=="baseline":raise ValueError("现场未来轨迹由数据源隔离保存，不可用于预测查询")
         if record["type"]=="Workspace":return OntologyRuntime(self.graph(record["id"]))
         path=record.get("path") if record["type"]=="Checkpoint" else str(Path(record["output"])/"runtime.trig")
         if not path or not Path(path).exists():raise ValueError("该运行尚无可读取的本体存档")
         if context not in self.views:self.views[context]=OntologyRuntime(OntologyStore.restore(path,signer=self.signer))
         return self.views[context]
+
+    def context_record(self,identity,kind=None):
+        record=self.catalog.get(identity)
+        if not record or record['type'] not in ('Workspace','Checkpoint','Task') or kind and record['type']!=kind:
+            raise ValueError('上下文不存在')
+        if not self.context_visible(record):raise ValueError('上下文已移除')
+        return record
+
+    def context_visible(self,record):
+        if self.catalog.get('removed/'+record['id']):return False
+        if record['type']=='Workspace':return record['status']!='removed'
+        workspace=self.catalog.get(record.get('workspace',''))
+        return bool(workspace and workspace['status']!='removed')
+
+    async def remove_context(self,identity,actor):
+        if self.resetting:raise ValueError('正在清理工作台，请稍候')
+        row=self.context_record(identity)
+        is_active=row['type']=='Workspace' and self.active() and self.active()['id']==identity
+        unfinished=[t for t in self.tasks() if t['status'] in ('queued','running','pausing','paused','cancelling')]
+        if any(t['id']==identity or t['workspace']==identity or json.loads(t['payload']).get('checkpoint_id')==identity for t in unfinished):
+            raise ValueError('有任务仍在使用此上下文；请等待完成或取消后移除')
+        changes=[dict(id='removed/'+identity,type='ContextRemoval',context=Ref(identity),removed_at=now())]
+        if is_active:self.resetting=True
+        try:
+            if is_active:
+                await self.stop_source()
+                row=self.catalog.get(identity)
+                changes.append(dict(id='active_workspace',type='Pointer',workspace=''))
+                self.pending.clear();self.source_pause.set();self.target.value=-1
+                self.source_status.update(connected=False,cursor=-1,quality='waiting',duplicates=0)
+            if row['type']=='Workspace':changes.append({**row,'status':'removed'})
+            self.audit('context_removed',actor,used=[identity],changes=changes,reason='从工作台移除上下文，原始签名记录继续保留')
+            self.views.pop(identity,None);self.replay_views.clear()
+        finally:
+            if is_active:self.resetting=False
+        return {'removed':identity}
+
+    def playback(self,context,head=None):
+        from .replay import ReplayIndex
+        runtime=self.context(context)
+        if not runtime:raise ValueError('请先载入工作空间')
+        graph=runtime.graph
+        head=graph.sequence if head is None else head
+        if not 1<=head<=graph.sequence:raise ValueError('历史版本不存在')
+        key=(graph,head)
+        if key not in self.replay_views:
+            if len(self.replay_views)>=3:self.replay_views.pop(next(iter(self.replay_views)))
+            self.replay_views[key]=ReplayIndex(graph,head)
+        return self.replay_views[key]
+
+    async def reset(self,actor):
+        if self.resetting or self.active_task or any(t['status']=='queued' for t in self.tasks()):
+            raise ValueError('请先完成或取消正在执行和排队的任务')
+        self.resetting=True
+        try:
+            await self.stop_source()
+            workspaces=[{**row,'status':'removed'} for row in self.catalog.entities('Workspace') if row['status']!='removed']
+            marker=dict(id='workspace_reset',type='ResetBoundary',sequence_after=self.catalog.sequence+1,reset_at=now())
+            self.audit('system_reset',actor,changes=[*workspaces,dict(id='active_workspace',type='Pointer',workspace=''),marker],
+                       reason='清空工作台生产数据视图；保留账号与历史签名证据')
+            self.pending.clear();self.views.clear();self.graphs.clear();self.replay_views.clear();self.progress.clear()
+            self.source_pause.set();self.target.value=-1;self.speed.value=600.
+            self.source_status.update(connected=False,cursor=-1,quality='waiting',duplicates=0)
+            return {'reset':True,'removed_workspaces':len(workspaces)}
+        finally:self.resetting=False
 
     async def start(self):
         for task in self.catalog.entities("Task"):
@@ -87,9 +152,10 @@ class Workbench:
         if self.pump_task:self.pump_task.cancel()
         self.accounts.close()
 
-    def tasks(self):return sorted(self.catalog.entities("Task"),key=lambda r:r["created_at"],reverse=True)
+    def tasks(self):return sorted((r for r in self.catalog.entities('Task') if self.context_visible(r)),key=lambda r:r['created_at'],reverse=True)
 
     def submit(self,kind,actor,workspace=None,**payload):
+        if self.resetting:raise ValueError('系统重置中')
         if sum(t["status"] in ("queued","running","paused") for t in self.tasks())>=24:raise ValueError("待执行任务已达上限")
         tid=uid("task");folder=self.root/("source-vault" if kind=="baseline" else "runs")/tid
         task=dict(id=tid,type="Task",kind=kind,status="queued",actor=actor,workspace=Ref(workspace or self.active()["id"]),created_at=now(),output=str(folder),payload=canonical(payload),time_s=0.,completed=0)
@@ -102,9 +168,12 @@ class Workbench:
                 except queue.Empty:break
                 kind=message["kind"];data=message["data"];tid=data.get("task_id");task=self.catalog.get(tid) if tid else None
                 if not task:continue
-                if kind=="progress":
+                if kind=='phase':
+                    self.audit('task_phase',changes=[{**task,'phase':data['phase']}])
+                elif kind=="progress":
                     self.progress[tid]=data["summary"];task.update(time_s=data["summary"]["time_s"],completed=data["summary"]["kpi"]["completed"])
                     task['updated_at']=now()
+                    task.update(phase=data['phase'],elapsed_s=data.get('elapsed_s',0))
                     self.audit("task_progress",changes=[task])
                 elif kind=="checkpoint":
                     self.progress[tid]=data["summary"]
@@ -114,6 +183,7 @@ class Workbench:
                     self.audit("task_checkpoint_saved",changes=[task],used=[cp["id"]])
                 elif kind=="done":
                     task.update(status="completed",time_s=data["summary"]["time_s"],completed=data["summary"]["kpi"]["completed"],native=canonical(data["native"]))
+                    if 'elapsed_s' in data:task['elapsed_s']=data['elapsed_s']
                     if task['kind']=='baseline':task['trace_hash']=hashlib.sha256((Path(task['output'])/'source.jsonl').read_bytes()).hexdigest()
                     self.progress[tid]=data["summary"];self.audit("task_completed",changes=[task],used=[tid]);self.active_task=None
                     if task["kind"]=="baseline":
@@ -136,7 +206,7 @@ class Workbench:
             await asyncio.sleep(.08)
 
     async def create_workspace(self,spec,actor):
-        if self.active_task or any(t["status"]=="queued" for t in self.tasks()):raise ValueError("请先完成或取消当前任务")
+        if self.resetting or self.active_task or any(t["status"]=="queued" for t in self.tasks()):raise ValueError("请先完成或取消当前任务")
         await self.stop_source();old=self.active()
         if old:
             old["status"]="archived";self.audit("workspace_archived",actor,changes=[old])
@@ -338,6 +408,7 @@ class Workbench:
         if not report["conforms"]:raise ValueError(report["report"])
 
     def checkpoint(self,actor):
+        if self.resetting:raise ValueError('正在清理工作台，请稍候')
         if not self.active() or self.active()["cursor"]<0:raise ValueError("尚未收到完整现场边界")
         graph=self.graph();time_s=OntologyRuntime(graph).time
         validate_boundary(graph)
@@ -357,8 +428,7 @@ class Workbench:
         return row
 
     def compare(self,checkpoint_id,actor,repetitions=1,patch=None):
-        cp=self.catalog.get(checkpoint_id)
-        if not cp or cp["type"]!="Checkpoint":raise ValueError("分析基线不存在")
+        cp=self.context_record(checkpoint_id,'Checkpoint')
         patches=[patch] if patch else [dict(name="维持 FIFO",rule="FIFO",reroute=False),dict(name="合格设备改派 + EDD",rule="EDD",reroute=True),dict(name="改派 + 延长班次",rule="EDD",reroute=True,shift_hours=12)]
         result=[]
         for sample in range(repetitions):
@@ -367,8 +437,7 @@ class Workbench:
         return result
 
     def task_control(self,tid,action,actor):
-        task=self.catalog.get(tid)
-        if not task or task["type"]!="Task":raise ValueError("任务不存在")
+        task=self.context_record(tid,'Task')
         if action=="cancel" and task["status"]=="queued":task["status"]="cancelled"
         elif tid!=self.active_task:raise ValueError("只能控制当前执行任务")
         elif action=="pause":self.pause.set();task["status"]="pausing"
@@ -388,12 +457,14 @@ class Workbench:
         self.audit("source_"+action,actor,reason="控制本机合成数据发布器，不控制真实设备")
 
     def state(self,context="live"):
+        selected=self.catalog.get(context) if context!='live' else None
+        if selected and not self.context_visible(selected):context='live'
         runtime=self.context(context);active=self.active()
-        return dict(version="0.2.0",revision=self.revision,workspace=active,context=context,
+        return dict(version="0.2.0",revision=self.revision,workspace=active,context=context,reset=self.catalog.get('workspace_reset'),
             spec=spec_from_graph(runtime.graph).model_dump() if runtime else default_spec().model_dump(),
             runtime=runtime.summary() if runtime else None,tasks=self.tasks()[:30],
-            checkpoints=sorted(self.catalog.entities("Checkpoint"),key=lambda r:r["created_at"],reverse=True),
-            workspaces=self.catalog.entities("Workspace"),source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value,"exhausted":self.source_exhausted()},preparation=self.preparation(),fingerprint=self.signer.fingerprint)
+            checkpoints=sorted((r for r in self.catalog.entities('Checkpoint') if self.context_visible(r)),key=lambda r:r['created_at'],reverse=True),
+            workspaces=[r for r in self.catalog.entities('Workspace') if self.context_visible(r)],source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value,"exhausted":self.source_exhausted()},preparation=self.preparation(),fingerprint=self.signer.fingerprint)
 
     def source_exhausted(self):
         ws=self.active()

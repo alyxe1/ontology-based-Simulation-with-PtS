@@ -51,11 +51,13 @@ class OntologyStore:
         self.store = ox.Store(str(path)) if path else ox.Store()
         self.lock = threading.RLock()
         self.signer = signer or Signer()
+        self.defer_non_intent_flush = False
         self.sequence = 0
         self.head = "0" * 64
         self._refresh_journal()
 
     def _refresh_journal(self):
+        self._latest_versions = {}
         rows = list(self.store.quads_for_pattern(None, iri("sequence"), None, AUDIT))
         if rows:
             latest = max(rows, key=lambda q: int(q.object.value))
@@ -110,7 +112,15 @@ class OntologyStore:
         return [self.get(i) for i in sorted(ids)]
 
     def find(self, kind, **filters):
-        return [r for r in self.entities(kind) if all(r.get(k) == v for k, v in filters.items())]
+        # Start with the indexed status for hot queries (pending events, queued jobs).
+        status = filters.get('status')
+        if isinstance(status, str) and not isinstance(status, Ref):
+            ids = (q.subject for q in self.store.quads_for_pattern(None, iri('status'), term(status), STATE))
+            rows = (self.get(decode(s)) for s in sorted(set(ids), key=lambda s:s.value)
+                    if next(self.store.quads_for_pattern(s, ox.NamedNode(RDF+'type'), iri(kind), STATE),None))
+        else:
+            rows = self.entities(kind)
+        return [r for r in rows if r and all(r.get(k) == v for k, v in filters.items())]
 
     @staticmethod
     def _triples(record):
@@ -133,22 +143,25 @@ class OntologyStore:
             records = list(changes)
             if len({r["id"] for r in records}) != len(records):
                 raise ValueError("一次提交不得重复更新同一对象")
+            existing_rows={r['id']: self.get(r['id']) for r in records}
             for record in records:
                 if "type" not in record: raise ValueError("记录必须具有本体类型")
-                existing=self.get(record["id"])
+                existing=existing_rows[record['id']]
                 if existing and existing["type"] in {"SourceRecord","Inspection","Checkpoint","BusinessRevision","RunResult","Mapping","SourceGeneration","SourceValidation","OntologyVersion"}:
                     raise ValueError("已提交的证据实体不可覆盖，请创建修订版本")
             sequence = self.sequence + 1
             def latest_version(identity):
+                if identity in self._latest_versions:return self._latest_versions[identity]
                 versions=[q.subject for target in (iri(identity),iri('record/'+str(identity))) for q in self.store.quads_for_pattern(None,ox.NamedNode(PROV+"specializationOf"),target,AUDIT)]
-                return max(versions,key=lambda n:int(n.value.rsplit('/',1)[-1])) if versions else iri(identity)
+                value=max(versions,key=lambda n:int(n.value.rsplit('/',1)[-1])) if versions else iri(identity)
+                self._latest_versions[identity]=value
+                return value
             input_versions={str(identity):str(decode(latest_version(identity))) for identity in used}
             payload = {"sequence": sequence, "previous": self.head, "kind": kind, "actor": actor,
                        "occurred_at": now(), "simulation_time_s": float(time_s), "used": list(used),
                        "input_versions": input_versions,"software_version":"0.2.0",
                        "reason": reason, "details": details or {},
-                       "changes": [{"before": encode_record(self.get(r["id"]) or {}), "after": encode_record(r)} for r in records]}
-            checksum = digest(payload)
+                       "changes": [{"before": encode_record(existing_rows[r["id"]] or {}), "after": encode_record(r)} for r in records]}
             event = iri(f"commit/{sequence:09}")
             generated = iri(f"revision/{sequence:09}")
             actor_node = iri(actor)
@@ -179,7 +192,7 @@ class OntologyStore:
                 audit += [f"{version} <{RDF}type> <{PROV}Entity> .",f"{version} <{PROV}wasGeneratedBy> {event} .",
                           f"{version} <{PROV}specializationOf> {description} .",f"{description} <{RDF}type> <{PROV}Entity> .",
                           f"{description} {iri('describes')} {iri(record['id'])} .",f"{generated} <{PROV}hadMember> {version} ."]
-                if self.get(record['id']):audit.append(f"{version} <{PROV}wasRevisionOf> {latest_version(record['id'])} .")
+                if existing_rows[record['id']]:audit.append(f"{version} <{PROV}wasRevisionOf> {latest_version(record['id'])} .")
                 for identity in used:audit.append(f"{version} <{PROV}wasDerivedFrom> {iri(input_versions[str(identity)])} .")
             payload['provenance']=[triple for triple in audit if str(iri('sequence')) not in triple and str(iri('publicKey')) not in triple]
             checksum=digest(payload)
@@ -188,11 +201,16 @@ class OntologyStore:
             deletes = "\n".join(f"DELETE WHERE {{ GRAPH {STATE} {{ {iri(r['id'])} ?p ?o }} }};" for r in records)
             update = deletes + f" INSERT DATA {{ GRAPH {STATE} {{ {inserts} }} GRAPH {AUDIT} {{ {' '.join(audit)} }} }}"
             self.store.update(update)
-            try:self.store.flush()
+            # Private simulation branches force intents to disk before every native
+            # side effect. Derived state can share the following barrier; an
+            # interrupted unacknowledged intent still requires reconciliation.
+            try:
+                if not self.defer_non_intent_flush or kind in ('command_prepared','command_unknown'):self.store.flush()
             except Exception:
                 self._refresh_journal()
                 raise
             self.sequence = sequence; self.head = checksum
+            self._latest_versions.update({r['id']:iri(f"{r['id']}/revision/{sequence:09}") for r in records})
             return {"sequence": sequence, "hash": checksum, "activity": decode(event)}
 
     def records(self, after=0, limit=None, through=None):
@@ -239,6 +257,7 @@ class OntologyStore:
         return report
 
     def export(self, path=None):
+        self.store.flush()
         data = self.store.dump(format=ox.RdfFormat.TRIG)
         if path: atomic_write(path, data)
         return data
