@@ -22,8 +22,9 @@ from .graph import OntologyStore, Ref, encode_record, decode_record
 from .runtime import OntologyRuntime
 from .specification import ProductionSpec, default_spec, spec_from_graph, spec_records, qualification, validate_ontology
 from .worker import worker_main
-from .publisher import publisher_main
+from .publisher import NEXT_MAINTENANCE, publisher_main
 from .invariants import validate_boundary
+from .views import impact
 
 class Workbench:
     def __init__(self,root=DATA,port=8820):
@@ -34,6 +35,7 @@ class Workbench:
         self.replay_views={};self.resetting=False
         self.source_token=secrets.token_urlsafe(32);self.source_pause=mp.Event();self.source_pause.set();self.source_stop=mp.Event()
         self.speed=mp.Value('d',600.);self.target=mp.Value('i',-1);self.publisher=None;self.opc_task=None
+        self.advance_start=None;self.source_ack=asyncio.Event()
         self.source_status={"connected":False,"paused":True,"cursor":-1,"duplicates":0,"quality":"waiting","endpoint":"opc.tcp://127.0.0.1:4843/ontologysim-v2/","synthetic":True}
         self.source_status["endpoint"]=os.environ.get("ONTOLOGYSIM_OPC_ENDPOINT",self.source_status["endpoint"])
         self.commands=mp.Queue(2);self.notifications=mp.Queue(128);self.cancel=mp.Event();self.pause=mp.Event();self.visible=mp.Event();self.capture=mp.Event()
@@ -155,11 +157,19 @@ class Workbench:
     def tasks(self):return sorted((r for r in self.catalog.entities('Task') if self.context_visible(r)),key=lambda r:r['created_at'],reverse=True)
 
     def submit(self,kind,actor,workspace=None,**payload):
+        return self.submit_batch(kind,actor,workspace,[payload])[0]
+
+    def submit_batch(self,kind,actor,workspace,payloads,used=(),details=None):
         if self.resetting:raise ValueError('系统重置中')
-        if sum(t["status"] in ("queued","running","paused") for t in self.tasks())>=24:raise ValueError("待执行任务已达上限")
-        tid=uid("task");folder=self.root/("source-vault" if kind=="baseline" else "runs")/tid
-        task=dict(id=tid,type="Task",kind=kind,status="queued",actor=actor,workspace=Ref(workspace or self.active()["id"]),created_at=now(),output=str(folder),payload=canonical(payload),time_s=0.,completed=0)
-        self.audit("task_queued",actor,used=[str(task["workspace"])],changes=[task]);return task
+        unfinished=sum(t["status"] in ("queued","running","paused","pausing","cancelling") for t in self.tasks())
+        if unfinished+len(payloads)>24:raise ValueError("本次需要 "+str(len(payloads))+" 个任务，超过当前队列余量 "+str(24-unfinished)+"；请等待或减少样本数")
+        workspace=workspace or self.active()["id"]
+        tasks=[]
+        for position,payload in enumerate(payloads):
+            tid=uid("task");folder=self.root/("source-vault" if kind=="baseline" else "runs")/tid
+            tasks.append(dict(id=tid,type="Task",kind=kind,status="queued",actor=actor,workspace=Ref(workspace),created_at=now(),queue_position=position,output=str(folder),payload=canonical(payload),time_s=0.,completed=0))
+        self.audit("comparison_queued" if details else "task_queued",actor,used=[str(workspace),*used],changes=tasks,details=details)
+        return tasks
 
     async def pump(self):
         while not self.shutdown:
@@ -198,7 +208,7 @@ class Workbench:
                     self.audit("native_"+kind,used=[tid],details=data)
                 self.revision+=1
             if not self.active_task:
-                waiting=sorted([t for t in self.tasks() if t["status"]=="queued"],key=lambda t:t["created_at"])
+                waiting=sorted([t for t in self.tasks() if t["status"]=="queued"],key=lambda t:(t["created_at"],t.get("queue_position",0)))
                 if waiting:
                     self.cancel.clear();self.pause.clear();self.capture.clear()
                     task=waiting[0];task["status"]="running";self.active_task=task["id"]
@@ -274,6 +284,11 @@ class Workbench:
 
     async def start_source(self,workspace):
         await self.stop_source();self.source_stop.clear();self.source_pause.set()
+        graph=self.graph(workspace['id'])
+        clock=graph.get('clock')
+        if clock.get('source_cursor',-1)>workspace['cursor']:
+            graph.store.flush()
+            self.commit_source_cursor(workspace,clock['source_cursor'],clock['time_s'])
         if 'trace_end_cursor' not in workspace:
             with Path(workspace['trace_path']).open(encoding='utf-8') as stream:
                 workspace['trace_end_cursor']=sum(1 for line in stream if line.strip())-1
@@ -299,6 +314,14 @@ class Workbench:
             if self.publisher.is_alive():self.publisher.terminate();self.publisher.join(2)
             self.publisher=None
         self.source_status["connected"]=False
+        self.advance_start=None;self.target.value=-1
+        if self.pending:
+            workspace=self.active()
+            if workspace:
+                graph=self.graph(workspace['id'])
+                for pending in self.pending.values():
+                    self.retain_raw(graph,pending['sources'].values(),pending['time'])
+            self.pending.clear()
 
     async def opc_loop(self,spec):
         service=self
@@ -330,61 +353,119 @@ class Workbench:
         data=envelope.model_dump();ws=self.active()
         if not ws or envelope.workspace!=ws["id"]:raise ValueError("数据不属于当前工作空间")
         graph=self.graph();record_id="source/"+envelope.raw_id
-        previous=graph.get(record_id);checksum=digest(data)
+        clock=graph.get("clock")
+        if clock.get("source_cursor",-1)>ws["cursor"]:
+            graph.store.flush()
+            self.commit_source_cursor(ws,clock["source_cursor"],clock["time_s"])
+        pending=self.pending.get(envelope.cursor)
+        staged=next((frame["sources"][record_id] for frame in self.pending.values() if record_id in frame["sources"]),None)
+        previous=staged or graph.get(record_id)
+        checksum=digest(data)
         if previous:
             self.source_status["duplicates"]+=1
             if previous["hash"]!=checksum:
-                graph.commit([dict(id=uid("quarantine"),type="SourceRecord",source=envelope.source,raw_id=envelope.raw_id,payload=canonical(data),hash=checksum,quality="conflict",received_at=now())],"source_conflict",reason="相同来源编号收到不同内容，拒绝覆盖")
+                self.retain_raw(graph,[previous],previous["event_time"])
+                graph.commit([dict(id=uid("quarantine"),type="SourceRecord",source=envelope.source,raw_id=envelope.raw_id,payload=canonical(data),hash=checksum,quality="conflict",received_at=now())],"source_conflict",used=[record_id],reason="相同来源编号收到不同内容，拒绝覆盖")
                 raise ValueError("重复消息内容冲突")
             if envelope.cursor<=ws["cursor"]:return {"duplicate":True}
         occurred=envelope.event_time/(1000 if envelope.unit=="ms" else 1)
-        if envelope.cursor>ws["cursor"] and occurred<OntologyRuntime(graph).time-EPS:raise ValueError("新边界的业务时间不能倒退；请作为更正版本接收")
         source=dict(id=record_id,type="SourceRecord",source=envelope.source,raw_id=envelope.raw_id,payload=canonical(data),hash=checksum,quality=envelope.quality,received_at=now(),event_time=occurred,original_unit=envelope.unit,cursor=envelope.cursor,synthetic=envelope.synthetic)
         generation='generation/'+str(ws.get('baseline_task',''))
         if graph.get(generation):source['generation']=Ref(generation)
-        if not previous:graph.commit([source],"source_received",actor="service/"+envelope.source.lower(),time_s=occurred,used=[generation] if graph.get(generation) else [],reason="原始数据保留；来源、单位和接收时间已记录")
-        if envelope.quality!="good":return {"quarantined":True}
+        source=previous or source
+        if envelope.quality!="good":
+            self.retain_raw(graph,[source],occurred)
+            return {"quarantined":True}
         if envelope.cursor<=ws["cursor"]:
-            graph.commit([],"late_record_retained",used=[record_id],reason="迟到记录保留，不覆盖已提交的现场边界");return {"late":True}
-        pending=self.pending.setdefault(envelope.cursor,{"sources":[],"assets":{},"time":occurred})
-        if abs(pending["time"]-occurred)>EPS:raise ValueError("来源时间切片不一致")
-        if record_id not in pending["sources"]:pending["sources"].append(record_id)
-        if envelope.source=="MES":pending["mes"]=envelope.records
-        else:
-            rid=next((r["id"] for r in graph.entities("Equipment") if r["opc_id"]==envelope.source_id),None)
-            if not rid:raise ValueError("无法映射 OPC 设备编号")
+            self.retain_raw(graph,[source],occurred,kind="late_record_retained")
+            return {"late":True}
+        error=None
+        if envelope.cursor!=ws["cursor"]+1:error="数据边界不连续，等待缺失记录重传"
+        elif occurred<clock["time_s"]-EPS:error="新边界的业务时间不能倒退"
+        elif pending and abs(pending["time"]-occurred)>EPS:error="来源时间切片不一致"
+        if error:
+            self.retain_raw(graph,[source],occurred)
+            raise ValueError(error)
+        equipment=graph.entities("Equipment")
+        channel=""
+        if envelope.source=="OPC":
+            channel=next((r["id"] for r in equipment if r["opc_id"]==envelope.source_id),None)
             observation=decode_record(envelope.record)
-            if observation.get("type")!="AssetState" or observation.get("resource")!=rid or observation.get("id")!=rid+"/state":raise ValueError("OPC 来源与设备状态实体不一致")
-            pending["assets"][rid]=envelope.record
-        if "mes" in pending and len(pending["assets"])==len(graph.entities("Equipment")):
-            if envelope.cursor!=ws["cursor"]+1:raise ValueError("数据边界不连续，等待缺失记录重传")
-            aliases={r["mes_id"]:r["id"] for r in graph.entities("Equipment")}
-            def resolve(value):
-                if isinstance(value,Ref):return Ref(aliases.get(str(value),str(value)))
-                if isinstance(value,list):return [resolve(v) for v in value]
-                return value
-            changes=[]
-            for encoded in [*pending["mes"],*pending["assets"].values()]:
-                row={k:resolve(v) for k,v in decode_record(encoded).items()}
-                if row["type"] not in ("Workpiece","AssetState","MaterialBalance","FixtureReservation","Execution","Inspection"):raise ValueError("接入实体类型未获允许")
-                if row["type"]=="Inspection" and graph.get(row["id"])==row:continue
-                if row["type"]=="Execution" and row["status"]=="active":
-                    op=graph.get(row["operation"]);resource=graph.get(row["resource"])
-                    duration=resource["setup_s"] if row["kind"]=="setup" else op["duration_s"]*resource["speed"]
-                    row.update(duration_s=duration,end_s=max(occurred+1,row["start_s"]+duration),time_basis="standard_estimate")
-                changes.append(row)
-            for rid,row in pending["assets"].items():
-                changes.append(dict(id=f"observation/{envelope.cursor}/{rid}",type="Observation",resource=Ref(rid),time_s=occurred,status=decode_record(row)["status"],source=Ref(f"source/OPC:{envelope.cursor}:{rid}"),synthetic=envelope.synthetic))
-            clock=graph.get("clock");clock.update(time_s=occurred,boundary=envelope.cursor,status="observed",source_cursor=envelope.cursor)
-            changes.append(clock)
-            try:validate_boundary(graph,changes)
-            except ValueError as ex:
-                graph.commit([dict(id=uid('validation'),type='SourceValidation',quality='invalid',reason=str(ex),sources=[Ref(i) for i in pending['sources']])],'source_validation_failed',used=pending['sources'],reason=str(ex))
+            if not channel or observation.get("type")!="AssetState" or observation.get("resource")!=channel or observation.get("id")!=channel+"/state":
+                self.retain_raw(graph,[source],occurred)
+                raise ValueError("无法映射 OPC 设备编号，或来源与设备状态实体不一致")
+        pending=self.pending.setdefault(envelope.cursor,{"sources":{},"channels":{},"time":occurred})
+        prior_channel=pending["channels"].get(channel)
+        if prior_channel and prior_channel!=record_id:
+            self.retain_raw(graph,[source],occurred)
+            raise ValueError("同一接收边界的来源通道已有记录")
+        pending["sources"][record_id]=source
+        pending["channels"][channel]=record_id
+        if len(pending["channels"])==len(equipment)+1:
+            try:self.align_frame(graph,ws,envelope.cursor,pending,equipment,generation)
+            except (ValueError,KeyError,TypeError) as ex:
+                self.retain_raw(graph,pending["sources"].values(),occurred)
+                if pending.get("validation_error")!=str(ex):
+                    graph.commit([dict(id=uid('validation'),type='SourceValidation',quality='invalid',reason=str(ex),sources=[Ref(i) for i in pending['sources']])],'source_validation_failed',used=list(pending['sources']),reason=str(ex))
+                    pending["validation_error"]=str(ex)
                 self.source_status['quality']='invalid';raise
-            graph.commit(changes,"observations_aligned",actor="service/semantic-ingestion",time_s=occurred,used=[*pending["sources"],"mapping/MES-v1","mapping/OPC-v1"],reason="MES 编号映射与 OPC 毫秒转秒；同一接收边界完整提交")
-            ws["cursor"]=envelope.cursor;self.audit("source_boundary_committed",changes=[ws],details={"cursor":envelope.cursor,"time_s":occurred})
-            self.pending.pop(envelope.cursor,None);self.source_status.update(cursor=envelope.cursor,quality="good");self.revision+=1
         return {"accepted":True}
+
+    def retain_raw(self,graph,records,time_s,kind="source_received"):
+        rows=[row for row in records if not graph.get(row["id"])]
+        if rows:
+            graph.commit(rows,kind,actor="service/semantic-ingestion",time_s=time_s,
+                         used=sorted({str(row['generation']) for row in rows if 'generation' in row}),
+                         reason="原始记录已保留，未改变已确认现场")
+
+    def commit_source_cursor(self,workspace,cursor,time_s):
+        self.audit("source_boundary_committed",changes=[{**workspace,"cursor":cursor}],details={"cursor":cursor,"time_s":time_s})
+        workspace["cursor"]=cursor
+        self.pending.pop(cursor,None);self.source_status.update(cursor=cursor,quality="good")
+        self.source_ack.set();self.source_ack=asyncio.Event()
+
+    async def acknowledged_cursor(self,workspace,minimum=None):
+        # Wait for the next durable boundary without the publisher polling on a timer.
+        signal=self.source_ack;active=self.active()
+        if not active or active["id"]!=workspace:return -1
+        if minimum is not None and active["cursor"]<minimum:
+            try:await asyncio.wait_for(signal.wait(),2.)
+            except TimeoutError:pass
+            active=self.active()
+        return active["cursor"] if active and active["id"]==workspace else -1
+
+    def align_frame(self,graph,ws,cursor,pending,equipment,generation):
+        occurred=pending["time"]
+        sources=pending["sources"]
+        envelopes={channel:json.loads(sources[key]["payload"]) for channel,key in pending["channels"].items()}
+        mes=envelopes.pop("")
+        aliases={r["mes_id"]:r["id"] for r in equipment}
+        def resolve(value):
+            if isinstance(value,Ref):return Ref(aliases.get(str(value),str(value)))
+            if isinstance(value,list):return [resolve(v) for v in value]
+            return value
+        changes=[]
+        for encoded in [*mes["records"],*(value["record"] for value in envelopes.values())]:
+            row={k:resolve(v) for k,v in decode_record(encoded).items()}
+            if row["type"] not in ("Workpiece","AssetState","MaterialBalance","FixtureReservation","Execution","Inspection"):raise ValueError("接入实体类型未获允许")
+            if row["type"]=="Inspection" and graph.get(row["id"])==row:continue
+            if row["type"]=="Execution" and row["status"]=="active":
+                op=graph.get(row["operation"]);resource=graph.get(row["resource"])
+                duration=resource["setup_s"] if row["kind"]=="setup" else op["duration_s"]*resource["speed"]
+                row.update(duration_s=duration,end_s=max(occurred+1,row["start_s"]+duration),time_basis="standard_estimate")
+            changes.append(row)
+        for rid,record in envelopes.items():
+            changes.append(dict(id=f"observation/{cursor}/{rid}",type="Observation",resource=Ref(rid),time_s=occurred,status=decode_record(record["record"])["status"],source=Ref(pending["channels"][rid]),synthetic=record["synthetic"]))
+        clock=graph.get("clock");clock.update(time_s=occurred,boundary=cursor,status="observed",source_cursor=cursor)
+        changes.append(clock)
+        validate_boundary(graph,changes)
+        retained=[identity for identity in sources if graph.get(identity)]
+        graph.commit([*(row for identity,row in sources.items() if identity not in retained),*changes],
+                     "observations_aligned",actor="service/semantic-ingestion",time_s=occurred,
+                     used=[*retained,"mapping/MES-v1","mapping/OPC-v1",*([generation] if graph.get(generation) else [])],
+                     details={"source_records":list(sources)},
+                     reason="原始记录、映射后观测和状态在同一事务提交；MES 编号对齐与 OPC 毫秒转秒")
+        self.commit_source_cursor(ws,cursor,occurred)
 
     def prepare_prediction(self,graph,actor):
         runtime=OntologyRuntime(graph);changes=[];clock=runtime.clock
@@ -407,34 +488,110 @@ class Workbench:
         report=validate_ontology(graph)
         if not report["conforms"]:raise ValueError(report["report"])
 
-    def checkpoint(self,actor):
+    def checkpoint(self,actor,incident_id=None,source_cursor=None):
         if self.resetting:raise ValueError('正在清理工作台，请稍候')
-        if not self.active() or self.active()["cursor"]<0:raise ValueError("尚未收到完整现场边界")
-        graph=self.graph();time_s=OntologyRuntime(graph).time
+        workspace=self.active()
+        if not workspace or workspace["cursor"]<0:raise ValueError("尚未收到完整现场边界")
+        graph=self.graph();runtime=OntologyRuntime(graph);time_s=runtime.time
+        if workspace["cursor"]!=runtime.clock.get("source_cursor",-1):
+            raise ValueError("现场版本正在确认，请稍后重试")
+        incident=None
+        if incident_id:
+            if workspace["cursor"]!=source_cursor:raise ValueError("现场版本已更新，请查看最新异常后再创建基线")
+            incident=next((row for row in impact(runtime) if row["id"]==incident_id),None)
+            if not incident:raise ValueError("此现场版本未找到该异常")
         validate_boundary(graph)
-        graph.commit([],"analysis_baseline_requested",actor=actor,time_s=time_s,used=["clock"],reason="固定已接收语义版本；现场接入继续")
+        linked={} if incident is None else dict(incident_id=incident["id"],incident_title=incident["title"],incident_jobs=incident["jobs"])
+        graph.commit([],"analysis_baseline_requested",actor=actor,time_s=time_s,used=["clock",*(incident["evidence"] if incident else [])],
+                     details={"source_cursor":workspace["cursor"],**linked},reason="固定已接收语义版本；现场接入继续")
         temporary=self.root/"checkpoints"/(uid("prepare")+".trig");graph.export(temporary)
-        branch=OntologyStore.restore(temporary,signer=self.signer);self.prepare_prediction(branch,actor);branch.export(temporary)
-        return self.register_checkpoint(temporary,self.active()["id"],actor,"分析基线")
+        try:
+            branch=OntologyStore.restore(temporary,signer=self.signer);self.prepare_prediction(branch,actor);branch.export(temporary)
+            return self.register_checkpoint(temporary,workspace["id"],actor,"异常分析基线" if incident else "分析基线",
+                                            metadata={"source_cursor":workspace["cursor"],**linked})
+        finally:temporary.unlink(missing_ok=True)
 
-    def register_checkpoint(self,path,workspace,actor,name,task_id=""):
+    def register_checkpoint(self,path,workspace,actor,name,task_id="",metadata=None):
         cid=uid("checkpoint");folder=self.root/"checkpoints"/cid;folder.mkdir(parents=True)
         target=folder/"runtime.trig";shutil.copy2(path,target)
         graph=OntologyStore.restore(target,signer=self.signer);runtime=OntologyRuntime(graph)
         manifest={"version":"2.0","id":cid,"workspace":workspace,"created_at":now(),"graph_sequence":graph.sequence,"graph_head":graph.head,"public_key":self.signer.public,"fingerprint":self.signer.fingerprint,"files":{"runtime.trig":hashlib.sha256(target.read_bytes()).hexdigest()}}
+        if metadata:manifest["analysis_context"]=metadata
         atomic_write(folder/"manifest.json",canonical({"manifest":manifest,"signature":self.signer.sign(manifest)}))
         row=dict(id=cid,type="Checkpoint",workspace=Ref(workspace),name=name,path=str(target),created_at=manifest["created_at"],time_s=runtime.time,graph_sequence=graph.sequence,graph_head=graph.head,source_task=task_id)
+        row.update(metadata or {})
         self.audit("checkpoint_created",actor,used=[workspace],changes=[row],reason="不可变本体快照已保存并签名")
         return row
 
-    def compare(self,checkpoint_id,actor,repetitions=1,patch=None):
+    def comparison_options(self,checkpoint_id):
+        cp=self.context_record(checkpoint_id,'Checkpoint');r=self.context(checkpoint_id)
+        graph=r.graph;now_s=r.time
+        waiting=sorted((job for job in r.jobs() if job["status"]=="queued"),key=lambda j:(j["queue_seq"],j["id"]))
+        queue_counts={}
+        for job in waiting:queue_counts[job["assigned"]]=queue_counts.get(job["assigned"],0)+1
+        equipment={asset["resource"]:asset for asset in graph.entities("AssetState")}
+        resources={resource["id"]:resource for resource in graph.entities("Equipment")}
+        capabilities={};jobs=[];incident_jobs=set(cp.get("incident_jobs",[]))
+        for job in waiting:
+            op=r.operation(job);family=graph.get(job["product"])["family"]
+            if op["id"] not in capabilities:capabilities[op["id"]]=qualification(graph,op["id"])
+            candidates=[]
+            for row in capabilities[op["id"]]:
+                rid=row["resource"];asset=equipment[rid]
+                busy=graph.get(asset["busy"]) if asset["busy"] else None
+                execution=graph.get(busy["execution"]) if busy else None
+                candidates.append({**row,"status":asset["status"],"queue":queue_counts.get(rid,0),
+                                   "setup_s":resources[rid]["setup_s"] if asset["family"]!=family else 0.,
+                                   "available_at_s":max(now_s,asset["maintenance_until"],execution["end_s"] if execution else 0.)})
+            jobs.append(dict(id=job["id"],order=job["order"],batch=job["batch"],operation=op["id"],operation_name=op["name"],
+                             assigned=job["assigned"],affected=job["id"] in incident_jobs,candidates=candidates))
+        return dict(checkpoint_id=checkpoint_id,time_s=now_s,horizon_s=r.config["horizon_s"],
+                    source_cursor=cp.get("source_cursor"),incident_id=cp.get("incident_id"),
+                    incident_title=cp.get("incident_title"),policy=r.policy,jobs=jobs)
+
+    def comparison_plan(self,checkpoint_id,repetitions=1,scenarios=None,patch=None):
         cp=self.context_record(checkpoint_id,'Checkpoint')
-        patches=[patch] if patch else [dict(name="维持 FIFO",rule="FIFO",reroute=False),dict(name="合格设备改派 + EDD",rule="EDD",reroute=True),dict(name="改派 + 延长班次",rule="EDD",reroute=True,shift_hours=12)]
-        result=[]
-        for sample in range(repetitions):
-            for p in patches:
-                result.append(self.submit("scenario",actor,str(cp["workspace"]),checkpoint=cp["path"],checkpoint_id=checkpoint_id,patch=p,seed=5202+sample,sample_index=sample))
-        return result
+        runtime=self.context(checkpoint_id);policy=runtime.policy
+        if runtime.time>=runtime.config["horizon_s"]-EPS:raise ValueError("所选基线已到达统计终点，请选择更早的基线")
+        if scenarios is not None:
+            names={"保持现状"};patches=[dict(name="保持现状")]
+            for p in scenarios:
+                if p["name"] in names:raise ValueError("方案名称不能重复：「"+p["name"]+"」")
+                names.add(p["name"])
+                if not p.get("assignments") and not any(p.get(k) is not None and p[k]!=policy[k] for k in ("rule","reroute","shift_hours")):
+                    # Explicit routing also reapplies that routing to existing queues.
+                    if p.get("reroute") is None:raise ValueError("请为「"+p["name"]+"」配置至少一项与基线不同的干预")
+                patches.append(p)
+        elif patch is not None:patches=[patch]
+        else:
+            patches=[dict(name="维持 FIFO",rule="FIFO",reroute=False,shift_hours=0),
+                     dict(name="合格设备改派 + EDD",rule="EDD",reroute=True,shift_hours=0),
+                     dict(name="改派 + 延长班次",rule="EDD",reroute=True,shift_hours=12)]
+        rules=[]
+        for p in patches:
+            assigned=[]
+            for jid,rid in p.get("assignments",{}).items():
+                job=runtime.graph.get(jid)
+                if not job or job.get("type")!="Workpiece" or job["status"]!="queued":
+                    raise ValueError(f"「{p['name']}」：{jid} 不在基线的等待队列中，仅可改派等待工件")
+                op=runtime.operation(job)
+                candidate=next((c for c in qualification(runtime.graph,op["id"]) if c["resource"]==rid),None)
+                if not candidate or not candidate["eligible"]:
+                    raise ValueError(f"「{p['name']}」：{jid} 的{op['name']}不能交给 {rid}："+(candidate["reason"] if candidate else "设备不存在"))
+                assigned.append(dict(job=jid,previous=job["assigned"],target=rid,operation=op["id"],reason=candidate["reason"]))
+            effective={key:p[key] if p.get(key) is not None else policy[key] for key in ("rule","reroute","shift_hours")}
+            rules.append(dict(name=p["name"],**effective,recalculate_queue=p.get("reroute") is not None,assignments=assigned))
+        preview=dict(checkpoint_id=checkpoint_id,time_s=runtime.time,horizon_s=runtime.config["horizon_s"],
+                     repetitions=repetitions,task_count=len(patches)*repetitions,scenarios=rules)
+        return cp,patches,preview
+
+    def compare(self,checkpoint_id,actor,repetitions=1,patch=None,scenarios=None):
+        cp,patches,preview=self.comparison_plan(checkpoint_id,repetitions,scenarios,patch)
+        identity=uid("comparison")
+        payloads=[dict(checkpoint=cp["path"],checkpoint_id=checkpoint_id,patch=p,seed=5202+sample,sample_index=sample,comparison_id=identity,scenario_index=index)
+                  for sample in range(repetitions) for index,p in enumerate(patches)]
+        return self.submit_batch("scenario",actor,str(cp["workspace"]),payloads,used=[checkpoint_id],
+                                 details={"comparison_id":identity,**preview})
 
     def task_control(self,tid,action,actor):
         task=self.context_record(tid,'Task')
@@ -449,9 +606,12 @@ class Workbench:
 
     def source_control(self,action,actor,speed=None):
         if action in ('play','incident') and self.source_exhausted():raise ValueError('现场参考轨迹已发布完毕；请归档并重新载入，或查看历史与分析基线')
-        if action=="pause":self.source_pause.set()
-        elif action=="play":self.target.value=-1;self.source_pause.clear()
-        elif action=="incident":self.target.value=-2;self.source_pause.clear()
+        if action=="pause":self.source_pause.set();self.target.value=-1;self.advance_start=None
+        elif action=="play":self.target.value=-1;self.advance_start=None;self.source_pause.clear()
+        elif action=="incident":
+            if not self.active() or not self.publisher:raise ValueError("现场数据源尚未就绪")
+            if self.target.value!=NEXT_MAINTENANCE:self.advance_start=self.active()["cursor"]
+            self.target.value=NEXT_MAINTENANCE;self.source_pause.clear()
         elif action=="speed" and speed and 1<=speed<=3600:self.speed.value=speed
         else:raise ValueError("数据源操作无效")
         self.audit("source_"+action,actor,reason="控制本机合成数据发布器，不控制真实设备")
@@ -464,7 +624,8 @@ class Workbench:
             spec=spec_from_graph(runtime.graph).model_dump() if runtime else default_spec().model_dump(),
             runtime=runtime.summary() if runtime else None,tasks=self.tasks()[:30],
             checkpoints=sorted((r for r in self.catalog.entities('Checkpoint') if self.context_visible(r)),key=lambda r:r['created_at'],reverse=True),
-            workspaces=[r for r in self.catalog.entities('Workspace') if self.context_visible(r)],source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value,"exhausted":self.source_exhausted()},preparation=self.preparation(),fingerprint=self.signer.fingerprint)
+            workspaces=[r for r in self.catalog.entities('Workspace') if self.context_visible(r)],source={**self.source_status,"paused":self.source_pause.is_set(),"speed":self.speed.value,"exhausted":self.source_exhausted(),
+            "fast_forward":None if self.advance_start is None else {"active":self.target.value==NEXT_MAINTENANCE and not self.source_exhausted(),"confirmed_frames":max(0,self.source_status["cursor"]-self.advance_start)}},preparation=self.preparation(),fingerprint=self.signer.fingerprint)
 
     def source_exhausted(self):
         ws=self.active()

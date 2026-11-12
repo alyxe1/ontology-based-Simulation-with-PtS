@@ -11,7 +11,7 @@ REFERENCE_FINGERPRINT = '5a8a5a4ac1c50c201debc5d199402b4a713038a41466961d452de62
 # A previous signed trace may only be reused by a specifically verified model
 # build. See artifacts/v02/native-performance.json for the frame-by-frame check.
 COMPATIBLE_CONTRACTS = {
-    'a7c13889804206a7b855bd15d3763da62ff030754533db5ef3ac1056a5151c32': 'edccd4d2f9b9103230ae97b368825ae07b4c30a37971eb8db7a248fb46359203',
+    'a7c13889804206a7b855bd15d3763da62ff030754533db5ef3ac1056a5151c32': '45557f93d1f038bdeb2fe5422ccc02ad1111a47310264fb62abf226b87870582',
 }
 
 

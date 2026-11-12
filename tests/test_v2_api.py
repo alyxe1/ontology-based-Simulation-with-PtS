@@ -7,6 +7,7 @@ from app_v2.graph import Ref, encode_record, OntologyStore
 from app_v2.worker import public_frame
 from app_v2.runtime import OntologyRuntime
 from app_v2.bundles import verify_bundle
+from app_v2.contracts import SourceRecordEnvelope
 
 @pytest.fixture
 def web(tmp_path,monkeypatch):
@@ -155,3 +156,70 @@ def test_reset_reuses_only_verified_unchanged_trace(web,monkeypatch):
     assert w.active()['cursor']==-1
     trace.write_text('changed reference',encoding='utf-8')
     response=web.post('/api/v2/workspaces',json={});assert response.json()['kind']=='baseline' and len(w.tasks())==2
+
+
+def test_source_frame_commits_once_with_complete_lineage(web,monkeypatch):
+    w=initialize(web);g=w.graph();initial=g.sequence
+    audit=w.audit
+    def lose_ack(kind,*args,**kwargs):
+        if kind=='source_boundary_committed':raise OSError('simulated catalog write failure')
+        return audit(kind,*args,**kwargs)
+    monkeypatch.setattr(w,'audit',lose_ack)
+    with pytest.raises(OSError,match='catalog write'):
+        feed(w)
+    assert w.active()['cursor']==-1 and g.get('clock')['source_cursor']==0
+    assert g.sequence==initial+1 and len(g.entities('SourceRecord'))==8
+    monkeypatch.setattr(w,'audit',audit)
+    feed(w)
+    assert w.active()['cursor']==0 and g.sequence==initial+1 and not w.pending
+    trace=web.get('/api/v2/evidence',params={'identity':'CNC01/state'}).json()
+    assert any(a['kind']=='observations_aligned' for a in trace['activities'])
+    assert {'source/MES:0','source/OPC:0:CNC01'}<={source['id'] for source in trace['sources']}
+    assert g.verify()['valid']
+
+
+def test_incident_options_and_comparison_submission_are_bound_to_baseline(web,monkeypatch):
+    w=initialize(web);g=w.graph()
+    job=g.get('J00021');assert job['product']=='P2'
+    job.update(status='queued',op_index=1,assigned=Ref('CNC01'),location=Ref('CNC01'),
+               queue_seq=1,released_at=0.,queued_at=0.)
+    asset=g.get('CNC01/state');asset.update(status='maintenance',maintenance_until=2700.)
+    balance=g.get(str(job['material_lot'])+'/balance');balance['available']-=1;balance['consumed']+=1
+    g.commit([job,asset,balance],'test_maintenance')
+    feed(w)
+    assert web.post('/api/v2/checkpoints',json={'incident_id':asset['id'],'source_cursor':1}).status_code==409
+    cp=web.post('/api/v2/checkpoints',json={'incident_id':asset['id'],'source_cursor':0}).json()
+    options=web.get('/api/v2/checkpoints/'+cp['id']+'/options').json()
+    option=next(j for j in options['jobs'] if j['id']==job['id'])
+    assert option['affected'] and option['assigned']=='CNC01' and options['incident_id']==asset['id']
+    assert {r['resource'] for r in option['candidates'] if r['eligible']}=={'CNC01','CNC02'}
+    assert next(r for r in option['candidates'] if r['resource']=='CNC01')['available_at_s']==2700
+    body={'checkpoint_id':cp['id'],'scenarios':[{'name':'合格改派','assignments':{job['id']:'CNC02'}}]}
+    preview=web.post('/api/v2/compare/validate',json=body).json()
+    assert preview['task_count']==2 and preview['scenarios'][0]['name']=='保持现状'
+    assert preview['scenarios'][1]['assignments'][0]['target']=='CNC02'
+    invalid={**body,'scenarios':[*body['scenarios'],{'name':'资格不符','assignments':{job['id']:'CNC03'}}]}
+    before=len(w.tasks())
+    rejected=web.post('/api/v2/compare',json=invalid)
+    assert rejected.status_code==400 and '材料' in rejected.json()['detail'] and len(w.tasks())==before
+    tasks=web.post('/api/v2/compare',json=body).json()
+    patches=[json.loads(t['payload']) for t in tasks]
+    assert len(tasks)==2 and len({p['comparison_id'] for p in patches})==1 and {p['seed'] for p in patches}=={5202}
+    assert patches[0]['patch']=={'name':'保持现状'}
+    assert len(web.get('/api/v2/compare',params={'checkpoint_id':cp['id']}).json())==2
+    w.submit_batch('scenario','service/test',w.active()['id'],[{} for _ in range(20)])
+    assert web.post('/api/v2/compare',json=body).status_code==400
+    assert len(w.tasks())==before+22
+
+
+def test_unchanged_policy_keeps_an_existing_nonpreferred_assignment(monkeypatch):
+    graph=OntologyStore();runtime=OntologyRuntime.create(graph,default_spec())
+    job=graph.get('J00021');assert job['product']=='P2'
+    job.update(status='queued',op_index=1,assigned=Ref('CNC02'),location=Ref('CNC02'))
+    policy=runtime.policy;policy.update(rule='EDD',shift_hours=11.)
+    graph.commit([job,policy],'test_nonpreferred_assignment')
+    monkeypatch.setattr(runtime,'settle',lambda native:None)
+    runtime.apply_policy(None,{'name':'保持现状'})
+    assert runtime.policy['rule']=='EDD' and runtime.policy['shift_hours']==11
+    assert graph.get(job['id'])['assigned']=='CNC02'
+    assert not graph.entities('Command')

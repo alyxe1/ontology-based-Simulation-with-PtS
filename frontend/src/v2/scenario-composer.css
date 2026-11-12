@@ -1,0 +1,12 @@
+.source-advance{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 14px;margin-bottom:14px;background:#eef6fa;border:1px solid #cfe1eb;border-left:3px solid #548da8;color:#426f86}
+.source-advance span{font-size:12px}.source-advance button{margin-left:auto}
+.comparison-form{display:grid;gap:12px}.comparison-form .toolbar{margin:0;flex-wrap:wrap}.comparison-form h4{margin:5px 0 0}
+.comparison-control{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:13px 16px;background:#eef5f8;border:1px solid #d5e4ec;border-left:3px solid #6d9cb4}
+.comparison-control strong,.comparison-control small{display:block}.comparison-control small{margin-top:5px;color:#688596}
+.comparison-edit{display:grid;gap:13px;border:1px solid #dbe5eb;border-radius:3px;background:#f8fafc;padding:13px}
+.comparison-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(153px,1fr));align-items:end;gap:10px}
+.comparison-fields label{display:grid;align-items:start;gap:5px}.comparison-fields input,.comparison-fields select{width:100%;min-width:0}
+.comparison-edit button,.comparison-form button{max-width:100%;white-space:normal}
+.manual-routing{background:white;border:1px solid #dce7ee;padding:10px 12px}.manual-routing summary{cursor:pointer;color:#466d83;font-weight:600}
+.manual-routing summary small{font-weight:400}.manual-routing .toolbar,.manual-routing .chips,.manual-routing details{margin:10px 0}.manual-routing select{max-width:min(100%,270px)}.manual-routing li{font-size:12px;line-height:1.6}
+.incident-grid .actions{flex-wrap:wrap}

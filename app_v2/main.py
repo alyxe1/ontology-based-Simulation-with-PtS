@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from .common import BASE, DATA, canonical, uid, now, atomic_write
-from .contracts import Login, NewAccount, BusinessRevision, CompareRequest, RunRequest, SourceRecordEnvelope
+from .contracts import Login, NewAccount, BusinessRevision, CheckpointRequest, CompareRequest, RunRequest, SourceRecordEnvelope
 from .graph import OntologyStore, Ref, decode_record
 from .runtime import OntologyRuntime
 from .specification import ProductionSpec, default_spec, spec_from_graph, qualification, validate_ontology
@@ -125,21 +125,30 @@ def create_app(root=DATA, workers=True):
         if body.source!="MES":raise ValueError("HTTP 接收端仅接收 MES")
         return w.ingest(body)
     @app.get("/api/v2/internal/cursor")
-    async def cursor(request:Request,workspace:str,w=Depends(workbench)):
-        internal(request,w);active=w.active()
-        return {"cursor":active["cursor"] if active and active["id"]==workspace else -1}
+    async def cursor(request:Request,workspace:str,minimum:int | None=None,w=Depends(workbench)):
+        internal(request,w)
+        return {"cursor":await w.acknowledged_cursor(workspace,minimum)}
     @app.post("/api/v2/checkpoints")
-    async def checkpoint(account=Depends(writer),w=Depends(workbench)):return w.checkpoint(actor(account))
+    async def checkpoint(body:CheckpointRequest | None=None,account=Depends(writer),w=Depends(workbench)):
+        return w.checkpoint(actor(account),**(body.model_dump() if body else {}))
+    @app.get("/api/v2/checkpoints/{checkpoint_id}/options")
+    async def comparison_options(checkpoint_id:str,account=Depends(user),w=Depends(workbench)):
+        return w.comparison_options(checkpoint_id)
+    def scenario_patches(body):
+        return None if body.scenarios is None else [row.model_dump(exclude_none=True) for row in body.scenarios]
+    @app.post("/api/v2/compare/validate")
+    async def validate_compare(body:CompareRequest,account=Depends(writer),w=Depends(workbench)):
+        return w.comparison_plan(body.checkpoint_id,body.repetitions,scenario_patches(body))[2]
     @app.post("/api/v2/compare")
-    async def compare(body:CompareRequest,account=Depends(writer),w=Depends(workbench)):return w.compare(body.checkpoint_id,actor(account),body.repetitions)
+    async def compare(body:CompareRequest,account=Depends(writer),w=Depends(workbench)):
+        return w.compare(body.checkpoint_id,actor(account),body.repetitions,scenarios=scenario_patches(body))
+    @app.get("/api/v2/compare")
+    async def comparison_tasks(checkpoint_id:str,account=Depends(user),w=Depends(workbench)):
+        cp=w.context_record(checkpoint_id,'Checkpoint')
+        return [t for t in w.tasks() if t['kind']=='scenario' and t['workspace']==cp['workspace']
+                and json.loads(t['payload']).get('checkpoint_id')==checkpoint_id]
     @app.post("/api/v2/scenarios")
     async def scenario(body:RunRequest,account=Depends(writer),w=Depends(workbench)):
-        r=runtime(w,body.checkpoint_id)
-        for jid,rid in body.patch.assignments.items():
-            job=r.graph.get(jid)
-            if not job or job["status"]!="queued":raise ValueError("仅可改派等待工件")
-            candidate=next((c for c in qualification(r.graph,r.operation(job)["id"]) if c["resource"]==rid),None)
-            if not candidate or not candidate["eligible"]:raise ValueError(candidate["reason"] if candidate else "设备不存在")
         return w.compare(body.checkpoint_id,actor(account),patch=body.patch.model_dump())
     @app.post("/api/v2/tasks/{task_id}/{action}")
     async def control(task_id:str,action:str,account=Depends(writer),w=Depends(workbench)):return w.task_control(task_id,action,actor(account))
@@ -160,7 +169,9 @@ def create_app(root=DATA, workers=True):
     async def graph(focus="",depth:int=Query(1,ge=1,le=3),limit:int=Query(40,ge=1,le=40),view="relations",expand:bool=False,relation="",context="live",account=Depends(user),w=Depends(workbench)):
         return focused_graph(runtime(w,context),focus,depth,limit,view,expand,relation)
     @app.get("/api/v2/impact")
-    async def impacts(context="live",account=Depends(user),w=Depends(workbench)):return impact(runtime(w,context))
+    async def impacts(context="live",account=Depends(user),w=Depends(workbench)):
+        r=runtime(w,context);cursor=r.clock.get("source_cursor")
+        return [{**row,"source_cursor":cursor} for row in impact(r)]
     @app.get("/api/v2/evidence")
     async def evidence(identity:str,context="live",account=Depends(user),w=Depends(workbench)):
         graph=w.catalog if context=="catalog" else runtime(w,context).graph

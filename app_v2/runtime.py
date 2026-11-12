@@ -207,7 +207,9 @@ class OntologyRuntime:
 
     def apply_policy(self,native,patch,actor="service/scenario"):
         policy=self.policy
-        policy.update(name=patch.get("name","方案"),rule=patch.get("rule","FIFO"),reroute=patch.get("reroute",False),shift_hours=float(patch.get("shift_hours",0)),window_start_s=self.time)
+        policy.update(name=patch.get("name","方案"),window_start_s=self.time)
+        for field in ('rule','reroute','shift_hours'):
+            if patch.get(field) is not None:policy[field]=patch[field]
         if policy["rule"] not in ("FIFO","EDD") or not 0<=policy["shift_hours"]<=24:raise ValueError("方案策略参数无效")
         assignments=[]
         for jid,rid in patch.get("assignments",{}).items():
@@ -219,6 +221,7 @@ class OntologyRuntime:
             assignments.append(dict(id="assignment/"+jid,type="Scenario",job=Ref(jid),resource=Ref(rid),op_index=job["op_index"]))
         self.graph.commit([policy,*assignments],"scenario_applied",actor=actor,time_s=self.time,used=["configuration"],reason="从同一分析基线创建独立预测分支")
         for job in self.graph.find("Workpiece",status="queued"):
+            if patch.get('reroute') is None and job['id'] not in patch.get('assignments',{}):continue
             op=self.operation(job);rid=self.select_resource(job,op);old=job["assigned"]
             if rid!=old:
                 job.update(assigned=Ref(rid),location=Ref(rid))

@@ -155,7 +155,7 @@ def lineage(graph,identity,limit=30):
         result.append({k:v for k,v in payload.items() if k not in ("changes","provenance")}|{"outputs":[c["after"]["id"] for c in payload["changes"]],"changes":[c for c in payload["changes"] if c["after"]["id"]==identity]})
     raw=[]
     for event in result:
-        for source_id in event["used"]:
+        for source_id in (*event["used"], *event.get('details',{}).get('source_records',[])):
             row=graph.get(source_id)
             if row and row["type"]=="SourceRecord" and row["id"] not in {r["id"] for r in raw}:raw.append(row)
     return dict(entity=entity,activities=result,sources=raw,total_activities=len(sequences))

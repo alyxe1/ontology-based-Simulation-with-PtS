@@ -6,7 +6,7 @@ def main():
     target=BASE/'delivery';target.mkdir(exist_ok=True);selected=[]
     for folder in ('app','app_v2','ontology','scripts','tests','docs','artifacts/v02','factory-reference','frontend/src','frontend/dist'):
         selected.extend(p for p in (BASE/folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc')
-    for name in ('README.md','.gitattributes','start.cmd','stop.cmd','backup.cmd','install.cmd','requirements.txt','requirements.lock.txt','environment.yml','conda-win64.lock.txt','pytest.ini','frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html','frontend/v2-ui-acceptance.cjs'):
+    for name in ('README.md','.gitattributes','start.cmd','stop.cmd','backup.cmd','install.cmd','requirements.txt','requirements.lock.txt','environment.yml','conda-win64.lock.txt','pytest.ini','frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html','frontend/v2-ui-acceptance.cjs','frontend/v2-comparison-acceptance.cjs'):
         path=BASE/name
         if path.exists():selected.append(path)
     selected=sorted(set(selected));manifest={p.relative_to(BASE).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in selected}

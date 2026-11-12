@@ -1,13 +1,14 @@
 """Cross-object invariants on a disposable RDF transaction view."""
 def validate_boundary(graph,changes=()):
     kinds=('Workpiece','Equipment','AssetState','FixturePool','FixtureReservation','MaterialBalance','MaterialLot','WorkOrder','Execution')
-    rows={r['id']:r for kind in kinds for r in graph.entities(kind)};rows.update({r['id']:r for r in changes})
+    before={r['id']:r for kind in kinds for r in graph.entities(kind)}
+    rows={**before,**{r['id']:r for r in changes}}
     typed=lambda kind:[r for r in rows.values() if r['type']==kind]
     errors=[];jobs=typed('Workpiece');machines={r['id']:r for r in typed('Equipment')}
     states={r['resource']:r for r in typed('AssetState')}
     for job in jobs:
         if job['status'] not in ('pending','queued','setup','processing','transfer','done','scrapped','material_wait'):errors.append(job['id']+': 未知状态')
-        old=graph.get(job['id'])
+        old=before.get(job['id'])
         if old and any(old[k]!=job[k] for k in ('order','batch','product','material_lot')):errors.append(job['id']+': 批次或产品身份不可隐式改变')
         if job['status'] in ('queued','setup','processing'):
             if job['assigned'] not in machines or job['location']!=job['assigned']:errors.append(job['id']+': 位置与设备不一致')
