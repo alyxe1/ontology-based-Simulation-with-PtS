@@ -1,0 +1,8 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+os:WorkbenchOntology a owl:Ontology ;
+    owl:versionInfo "2.3" ;
+    rdfs:label "OntologySim 制造与证据本体 · TBox" ;
+    owl:imports os:Ontology, os:SimulationOntology, os:EvidenceOntology, <http://www.w3.org/ns/prov-o#> .

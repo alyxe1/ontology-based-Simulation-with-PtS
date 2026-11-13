@@ -6,18 +6,25 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 from fastapi import FastAPI, Request, HTTPException, Depends, Response, Query
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 from .common import BASE, DATA, canonical, uid, now, atomic_write
 from .contracts import Login, NewAccount, BusinessRevision, CheckpointRequest, CompareRequest, RunRequest, SourceRecordEnvelope
 from .graph import OntologyStore, Ref, decode_record
 from .runtime import OntologyRuntime
-from .specification import ProductionSpec, default_spec, spec_from_graph, qualification, validate_ontology
+from .specification import ProductionSpec, default_spec, spec_from_graph, qualification
 from .service import Workbench
-from .views import focused_graph, lineage, impact
+from .views import focused_graph, lineage, impact, concept_details
+from .simulation_contract import validate_abox
 from .bundles import make_bundle, verify_bundle
+from .result_analysis import analyze_result
+from .maintenance_outcomes import maintenance_outcomes
+from . import cases
+from .evidence_graph import schema_view as evidence_schema_view
 
 
 def create_app(root=DATA, workers=True):
@@ -138,7 +145,8 @@ def create_app(root=DATA, workers=True):
         return None if body.scenarios is None else [row.model_dump(exclude_none=True) for row in body.scenarios]
     @app.post("/api/v2/compare/validate")
     async def validate_compare(body:CompareRequest,account=Depends(writer),w=Depends(workbench)):
-        return w.comparison_plan(body.checkpoint_id,body.repetitions,scenario_patches(body))[2]
+        return (await run_in_threadpool(w.comparison_plan,body.checkpoint_id,body.repetitions,
+                                       scenario_patches(body),include_mapping=True))[2]
     @app.post("/api/v2/compare")
     async def compare(body:CompareRequest,account=Depends(writer),w=Depends(workbench)):
         return w.compare(body.checkpoint_id,actor(account),body.repetitions,scenarios=scenario_patches(body))
@@ -158,6 +166,29 @@ def create_app(root=DATA, workers=True):
         if task["kind"]=="baseline":raise HTTPException(403,"现场未来轨迹由数据源隔离保存")
         if task_id in w.progress:return {"task":task,"summary":w.progress[task_id],"native":json.loads(task.get("native","{}"))}
         return {"task":task,"summary":runtime(w,task_id).summary(),"native":json.loads(task.get("native","{}"))}
+    @app.get("/api/v2/tasks/{task_id}/analysis")
+    async def result_analysis(task_id:str,account=Depends(user),w=Depends(workbench)):
+        task=w.context_record(task_id,'Task')
+        if task["kind"]!="scenario" or task["status"]!="completed":
+            raise HTTPException(409,"详细分析需要已完成的方案")
+        return await run_in_threadpool(lambda: analyze_result(runtime(w,task_id).graph,task_id))
+    @app.get("/api/v2/tasks/{task_id}/maintenance-outcomes")
+    async def task_maintenance_outcomes(task_id:str,account=Depends(user),w=Depends(workbench)):
+        task=w.context_record(task_id,'Task')
+        if task["kind"]!="scenario" or task["status"]!="completed":
+            raise HTTPException(409,"需要已完成的比较方案")
+        checkpoint_id=json.loads(task["payload"]).get("checkpoint_id")
+        if not checkpoint_id:
+            return None
+        checkpoint=w.catalog.get(checkpoint_id)
+        if not checkpoint or checkpoint["type"]!="Checkpoint" or checkpoint["workspace"]!=task["workspace"]:
+            raise ValueError("方案对应的分析基线不可用")
+        if not checkpoint.get("incident_id"):
+            return None
+        def read():
+            base=runtime(w,checkpoint_id).graph if w.context_visible(checkpoint) else OntologyStore.restore(checkpoint["path"])
+            return maintenance_outcomes(base,runtime(w,task_id).graph,checkpoint)
+        return await run_in_threadpool(read)
     @app.post("/api/v2/checkpoints/{checkpoint_id}/{action}")
     async def restore(checkpoint_id:str,action:str,account=Depends(writer),w=Depends(workbench)):
         if action not in ("restore","continuation","view"):raise ValueError("无效恢复操作")
@@ -176,16 +207,8 @@ def create_app(root=DATA, workers=True):
     async def evidence(identity:str,context="live",account=Depends(user),w=Depends(workbench)):
         graph=w.catalog if context=="catalog" else runtime(w,context).graph
         if identity.startswith('schema/'):
-            from .graph import SCHEMA,iri
-            rows=list(graph.store.quads_for_pattern(iri(identity.removeprefix('schema/')),None,None,SCHEMA))
-            if not rows:raise ValueError('本体概念不存在')
-            attributes={'概念 URI':iri(identity.removeprefix('schema/')).value,'本体版本':'2.0'}
-            for row in rows:
-                name=row.predicate.value.rsplit('#',1)[-1].rsplit('/',1)[-1]
-                if name in ('label','subClassOf','closeMatch','type'):
-                    label={'label':'定义名称','subClassOf':'正式父类','closeMatch':'近似标准映射','type':'定义类型'}[name]
-                    attributes[label]=row.object.value
-            proof=lineage(graph,'ontology_contract');return {**proof,'entity':attributes}
+            attributes,constraints=concept_details(graph,identity.removeprefix('schema/'))
+            proof=lineage(graph,'ontology_contract');return {**proof,'entity':attributes,'constraints':constraints}
         if not graph.get(identity) and w.catalog.get(identity):graph=w.catalog
         return lineage(graph,identity)
     @app.get("/api/v2/history")
@@ -193,6 +216,99 @@ def create_app(root=DATA, workers=True):
         graph=w.catalog if context=="catalog" else runtime(w,context).graph
         boundary=w.catalog.get('workspace_reset') if context=='catalog' else None
         return {"head":graph.sequence,"hash":graph.head,"records":[{**r,"payload":{k:v for k,v in r["payload"].items() if k not in ("changes","provenance")}} for r in graph.records(after=boundary['sequence_after']-1 if boundary else 0,limit=limit)]}
+    @app.get("/api/v2/ontology/layers")
+    async def ontology_layers(account=Depends(user)):
+        return cases.ontology_layers()
+
+    @app.get("/api/v2/ontology/tbox/{name}")
+    async def tbox(name:str,account=Depends(user)):
+        if name not in cases.TBOX_FILES:
+            raise HTTPException(404,"本体文件不存在")
+        return FileResponse(cases.TBOX/name)
+
+    @app.get("/api/v2/ontology/evidence-graph")
+    async def evidence_schema(focus:str="",depth:int=Query(2,ge=1,le=3),account=Depends(user)):
+        return await run_in_threadpool(evidence_schema_view,focus=focus,depth=depth)
+
+    @app.get("/api/v2/evidence-cases")
+    async def evidence_cases(account=Depends(user),w=Depends(workbench)):
+        return sorted([{key:row[key] for key in ("id","name","created_at","objective")}
+                       for row in w.catalog.entities("EvidenceCase")], key=lambda row:row["created_at"],reverse=True)
+
+    @app.post("/api/v2/evidence-cases")
+    async def seal_case(body:cases.CaseCreate,account=Depends(writer),w=Depends(workbench)):
+        identity=await run_in_threadpool(cases.create_case,w,body,actor(account))
+        return {"id":identity}
+
+    @app.get("/api/v2/evidence-cases/{case_id}")
+    async def case_detail(case_id:str,account=Depends(user),w=Depends(workbench)):
+        return await run_in_threadpool(cases.case_detail,w,case_id)
+
+    @app.get("/api/v2/evidence-cases/{case_id}/graph")
+    async def case_graph(case_id:str,focus:str="",depth:int=Query(2,ge=1,le=3),
+                         direction:Literal["both","in","out"]="both",account=Depends(user),w=Depends(workbench)):
+        return await run_in_threadpool(cases.case_graph_view,w,case_id,focus=focus,depth=depth,direction=direction)
+    @app.post("/api/v2/evidence-cases/{case_id}/adoption")
+    async def adoption(case_id:str,body:cases.Adoption,account=Depends(writer),w=Depends(workbench)):
+        cases.adopt(w,case_id,body,actor(account))
+        return {"saved":True}
+
+    @app.post("/api/v2/evidence-cases/{case_id}/execution")
+    async def execution(case_id:str,body:cases.FieldExecution,account=Depends(writer),w=Depends(workbench)):
+        cases.execute(w,case_id,body,actor(account))
+        return {"saved":True}
+
+    @app.post("/api/v2/evidence-cases/{case_id}/outcomes")
+    async def field_outcome(case_id:str,body:cases.FieldOutcome,account=Depends(writer),w=Depends(workbench)):
+        cases.observe(w,case_id,body,actor(account))
+        return {"saved":True}
+
+    @app.post("/api/v2/evidence-cases/{case_id}/improvements")
+    async def improvement(case_id:str,body:cases.Improvement,account=Depends(writer),w=Depends(workbench)):
+        cases.improve(w,case_id,body,actor(account))
+        return {"saved":True}
+
+    @app.get("/api/v2/evidence-cases/{case_id}/artifact/{name:path}")
+    async def case_artifact(case_id:str,name:str,account=Depends(user),w=Depends(workbench)):
+        content=await run_in_threadpool(cases.read_artifact,w,case_id,name)
+        if name.endswith(".json"):
+            return Response(content,media_type="application/json")
+        return Response(content,media_type="application/octet-stream",headers={"Content-Disposition":f'attachment; filename="{case_id}-{name.replace("/", "-")}"'})
+
+    @app.get("/api/v2/evidence-cases/{case_id}/runs/{task_id}/maintenance-outcomes")
+    async def archived_maintenance_outcomes(case_id:str,task_id:str,account=Depends(user),w=Depends(workbench)):
+        record=cases.case_record(w,case_id)
+        if not any(r["id"]==task_id and r["status"]=="completed" for r in json.loads(record["runs"])):
+            raise ValueError("档案没有该已完成运行")
+        metadata=json.loads(record["baseline"])
+        if not metadata.get("incident_id"):
+            return None
+        def read():
+            base=runtime(w,case_id+"~baseline").graph
+            return maintenance_outcomes(base,runtime(w,case_id+"~"+task_id).graph,metadata)
+        return await run_in_threadpool(read)
+
+    @app.get("/api/v2/evidence-cases/{case_id}/verify")
+    async def verify_case(case_id:str,account=Depends(user),w=Depends(workbench)):
+        def check():
+            with cases.export_case(w,case_id) as stream:
+                return cases.verify_case_bundle(stream,w.signer.fingerprint)
+        return await run_in_threadpool(check)
+
+    @app.get("/api/v2/evidence-cases/{case_id}/prov")
+    async def case_prov(case_id:str,account=Depends(user),w=Depends(workbench)):
+        def render():
+            return cases.prov_graph(w,case_id,cases.case_events(w,case_id)).serialize(format="turtle")
+        return Response(await run_in_threadpool(render),media_type="text/turtle",
+                        headers={"Content-Disposition":f'attachment; filename="{case_id}-abox.ttl"'})
+
+    @app.get("/api/v2/evidence-cases/{case_id}/export")
+    async def export_case(case_id:str,account=Depends(user),w=Depends(workbench)):
+        stream=await run_in_threadpool(cases.export_case,w,case_id)
+        def chunks():
+            with stream:
+                yield from iter(lambda:stream.read(1024*1024),b"")
+        return StreamingResponse(chunks(),media_type="application/zip",headers={"Content-Disposition":f'attachment; filename="{case_id}.zip"'})
     @app.get('/api/v2/replay/timeline')
     async def playback_timeline(context='live',account=Depends(user),w=Depends(workbench)):
         index=w.playback(context)
@@ -214,7 +330,8 @@ def create_app(root=DATA, workers=True):
         count=next(iter(graph.store.query(f'SELECT (COUNT(?s) AS ?count) WHERE {{ GRAPH {STATE} {{ ?s <{RDF}type> {iri("SourceRecord")} }} }}')))
         return {"total":int(count['count'].value),"records":[{k:v for k,v in r.items() if k!="payload"} for r in rows],"issues":graph.entities('SourceValidation'),"mapping":[{"equipment":r["id"],"mes":r["mes_id"],"opc":r["opc_id"],"conversion":"OPC ms ÷ 1000 → s"} for r in graph.entities("Equipment")]}
     @app.get("/api/v2/validate")
-    async def validate(context="live",account=Depends(user),w=Depends(workbench)):return validate_ontology(runtime(w,context).graph)
+    async def validate(context="live",account=Depends(user),w=Depends(workbench)):
+        return await run_in_threadpool(validate_abox,runtime(w,context).graph)
 
     @app.post("/api/v2/revisions/validate")
     async def revision(body:BusinessRevision,account=Depends(writer),w=Depends(workbench)):
@@ -230,7 +347,7 @@ def create_app(root=DATA, workers=True):
                 for i in range(max(len(a),len(b))):diff(a[i] if i<len(a) else None,b[i] if i<len(b) else None,path+"/"+str(i))
             elif a!=b:differences.append({"path":path,"before":a,"after":b})
         diff(original,updated)
-        trial=OntologyStore();OntologyRuntime.create(trial,spec);report=validate_ontology(trial)
+        trial=OntologyStore();OntologyRuntime.create(trial,spec);report=await run_in_threadpool(validate_abox,trial)
         row=dict(id=uid("revision"),type="BusinessRevision",workspace=Ref(ws["id"]),base_revision=body.base_revision,specification=canonical(updated),reason=body.reason,created_at=now(),differences=canonical(differences),conforms=report["conforms"])
         w.audit("business_revision_validated",actor(account),used=[ws["id"]],changes=[row],details={"report":report})
         return {"id":row["id"],"differences":differences,"validation":report,"impact":{"orders":[o.id for o in spec.orders],"bound_existing_runs":"原有批次与方案仍使用原版本","publication":"发布为新的生产工作空间，当前空间自动归档"}}

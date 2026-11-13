@@ -3,8 +3,11 @@ import {BusinessCanvas,OrderedRoute} from './knowledge';
 import {Playback} from './playback';
 import {ContextManager} from './contexts';
 import {ScenarioComposer} from './scenario-composer';
+import {ScenarioResults} from './scenario-results';
+import {CaseSeal,EvidenceCases} from './evidence-cases';
+import {ProvenanceGraph} from './provenance-graph';
 import {Play,Pause,Save,Download,Upload,ArrowRight,ShieldCheck,AlertTriangle,GitBranch,Eye,RotateCcw,CheckCircle2,FileCheck,ExternalLink} from 'lucide-react';
-import {activityTitle,api,Row,time,stamp,Badge,Panel,Table,Empty,Chart,KeyValues} from './ui';
+import {activityTitle,api,Row,time,stamp,Badge,Panel,Table,Empty,KeyValues} from './ui';
 
 function selectedProduct(data:any,focus:string){const{spec,runtime:r}=data;return spec.products.find((p:any)=>(p.id===focus||focus.startsWith(p.id+'/')))||spec.products.find((p:any)=>p.id===(r.batches.find((b:any)=>b.id===focus)?.product||r.orders.find((o:any)=>o.id===focus)?.product))||spec.products[0]}
 function matchingJobs(data:any,focus:string){return data.runtime.jobs.filter((j:any)=>!focus||[j.id,j.batch,j.order,j.product,j.assigned].includes(focus))}
@@ -29,8 +32,9 @@ export function Products(props:any){const{data,focus,setFocus,inspect,context,ac
  </>}
 
 export function Scenarios(props:any){const{data,context,inspect,act,busy,readOnly}=props;
- const[incidents,setIncidents]=useState<any[]>([]),[cp,setCp]=useState(''),[results,setResults]=useState<any[]>([]),[selected,setSelected]=useState('');
+ const[incidents,setIncidents]=useState<any[]>([]),[cp,setCp]=useState(''),[results,setResults]=useState<any[]>([]);
  const[taskView,setTaskView]=useState<{cp:string;tasks:any[]}>({cp:'',tasks:[]}),[group,setGroup]=useState('');
+ const[resultIssue,setResultIssue]=useState<{key:string;failed:number}|null>(null);
  useEffect(()=>{let active=true;api('/impact?context='+encodeURIComponent(context)).then(rows=>{if(active)setIncidents(rows)}).catch(()=>{if(active)setIncidents([])});return()=>{active=false}},[data.workspace?.id,data.workspace?.cursor,context]);
  useEffect(()=>{setCp(current=>data.checkpoints.some((c:any)=>c.id===current)?current:data.checkpoints[0]?.id||'')},[data.checkpoints]);
  const taskKey=data.tasks.filter((t:any)=>t.kind==='scenario').map((t:any)=>[t.id,t.status,t.phase,t.time_s,t.updated_at].join(':')).join(',');
@@ -50,9 +54,18 @@ export function Scenarios(props:any){const{data,context,inspect,act,busy,readOnl
   return x.sample_index-y.sample_index||(x.scenario_index??0)-(y.scenario_index??0)||a.created_at.localeCompare(b.created_at);
  });
  const completeKey=tasks.filter((t:any)=>t.status==='completed').map((t:any)=>t.id).join(',');
- useEffect(()=>{let active=true;Promise.all(completeKey.split(',').filter(Boolean).map(id=>api('/tasks/'+id+'/result'))).then(rows=>{if(active)setResults(rows)}).catch(()=>{if(active)setResults([])});return()=>{active=false}},[completeKey]);
- const displayed=results.filter(r=>tasks.some(t=>t.id===r.task.id));
- const current=displayed.find(r=>r.task.id===selected)||displayed[0];
+ useEffect(()=>{
+  let active=true;
+  const ids=completeKey.split(',').filter(Boolean);
+  Promise.allSettled(ids.map(id=>api('/tasks/'+encodeURIComponent(id)+'/result'))).then(rows=>{
+   if(!active)return;
+   const available=rows.flatMap(row=>row.status==='fulfilled'?[row.value]:[]);
+   setResults(available);
+   setResultIssue({key:completeKey,failed:ids.length-available.length});
+  });
+  return()=>{active=false};
+ },[completeKey]);
+ const displayed=useMemo(()=>{const ids=new Set(completeKey.split(','));return results.filter(r=>ids.has(r.task.id))},[results,completeKey]);
  const canCreate=!busy&&!readOnly&&context==='live'&&(data.workspace?.cursor??-1)>=0;
  const create=(incident?:any)=>act(async()=>{const row=await api('/checkpoints',incident?{incident_id:incident.id,source_cursor:incident.source_cursor}:{});setCp(row.id);setGroup('');return row},incident?'已固定该异常及其受影响对象为分析起点':'已固定当前数据版本为分析起点；现场接入继续');
  return <><Panel title="当前异常与受影响对象"><div className="incident-grid">{incidents.slice(0,6).map((i:any)=><article key={i.id}><div><AlertTriangle size={17}/><strong>{i.title}</strong></div><p>{i.explanation}</p><span>工件 {i.jobs.length} · 批次 {i.batches.length} · 订单 {i.orders.length}</span><div className="chips">{i.orders.map((o:string)=><button key={o} onClick={()=>inspect(o)}>{o}</button>)}</div><div className="actions"><button className="link" onClick={()=>inspect(i.id)}>查看异常依据 ↗</button>{context==='live'&&<button disabled={!canCreate||i.source_cursor!==data.workspace?.cursor} onClick={()=>create(i)}>以此异常创建基线</button>}</div></article>)}</div>{!incidents.length&&<Empty>当前时刻没有维护或检验异常。可从当前现场创建基线，也可先推进至下一次维护。</Empty>}</Panel>
@@ -62,30 +75,45 @@ export function Scenarios(props:any){const{data,context,inspect,act,busy,readOnl
   <div className="toolbar"><button disabled={!canCreate} onClick={()=>create()}><Save size={14}/>从当前现场创建基线</button><label>分析基线<select aria-label="分析基线" value={cp} onChange={e=>{setCp(e.target.value);setGroup('')}}><option value="">选择分析基线</option>{data.checkpoints.map((c:any)=><option key={c.id} value={c.id}>{c.incident_title||c.name} · {time(c.time_s)} · {c.id.slice(-6)}</option>)}</select></label>{baseline&&<button className="link" onClick={()=>inspect(baseline.id,'catalog')}>查看基线证据 ↗</button>}</div>
   {baseline&&<ScenarioComposer key={cp} cp={cp} inspect={inspect} act={act} busy={busy} readOnly={readOnly} onSubmitted={(rows:any[])=>{const same=taskView.cp===cp?taskView.tasks:[];setTaskView({cp,tasks:[...rows,...same]});setGroup(JSON.parse(rows[0].payload).comparison_id)}}/>}
  </div></Panel>
- {byGroup.size>0&&<Panel title="原生执行任务" action={<label>比较批次<select aria-label="比较批次" value={chosenGroup} onChange={e=>{setGroup(e.target.value);setSelected('')}}>{[...byGroup].map(([id,rows])=><option key={id} value={id}>{id==='legacy'?'历史方案（升级前）':stamp(rows[0].created_at)+' · '+id.slice(-6)} · {rows.length} 个任务</option>)}</select></label>}><p className="note">同一批比较串行执行，每个方案显示 Plant Simulation 窗口。下表区分仿真业务时间和实际计算耗时。</p><TaskList {...props} data={{...data,tasks}} limit={20}/></Panel>}
- {displayed.length>0&&<><Panel title="方案结果比较" action={<button onClick={()=>inspect('policy',displayed[0].task.id)}>查看统计与策略依据</button>}><Chart option={{tooltip:{trigger:'axis'},legend:{data:['完工工件','按期订单','在制工件']},grid:{top:55,bottom:65,left:50,right:20},xAxis:{type:'category',data:displayed.map((r:any)=>JSON.parse(r.task.payload).patch.name+'\n样本 '+(JSON.parse(r.task.payload).sample_index+1)),axisLabel:{fontSize:10}},yAxis:{type:'value'},series:[['完工工件','completed'],['按期订单','on_time_orders'],['在制工件','wip']].map(([name,key],index)=>({name,type:'bar',data:displayed.map(r=>r.summary.kpi[key]),itemStyle:{color:['#377c9a','#21a28b','#c2cfd7'][index]}}))}}/><Table rows={displayed.map((x:any)=>({id:x.task.id,name:JSON.parse(x.task.payload).patch.name,sample:JSON.parse(x.task.payload).sample_index+1,...x.summary.kpi,native:x.native}))} onRow={(r:any)=>setSelected(r.id)} columns={[{key:'name',title:'方案'},{key:'sample',title:'样本组'},{key:'completed',title:'完工'},{key:'on_time_orders',title:'按期订单'},{key:'completed_orders',title:'完工订单'},{key:'mean_queue_wait_per_released_piece_s',title:'每件排队 / 分',render:(r:any)=>r.mean_queue_wait_per_released_piece_s==null?'旧版本未记录':(r.mean_queue_wait_per_released_piece_s/60).toFixed(1)},{key:'average_wip',title:'平均在制',render:(r:any)=>r.average_wip.toFixed(2)},{key:'scrapped',title:'报废'},{key:'native',title:'原生核对',render:()=> <span className="positive">已回读核对</span>}]}/></Panel>
- {current&&<><Panel title={'运行轨迹 · '+JSON.parse(current.task.payload).patch.name} action={<button onClick={()=>inspect('result/'+current.task.id,current.task.id)}>结果证据 ↗</button>}><Gantt summary={current.summary}/><div className="note">统计窗口 {time(current.summary.kpi.window_start_s)} — {time(current.summary.kpi.window_end_s)}；设备利用率按此日历时间窗计算。未完成订单不计入交期完成统计。</div><Table rows={current.summary.orders} columns={[{key:'id',title:'订单'},{key:'completed',title:'完工数'},{key:'quantity',title:'数量'},{key:'completion_s',title:'实际完工',render:(o:any)=>o.completion_s==null?'未完工':time(o.completion_s)},{key:'tardiness_s',title:'延期',render:(o:any)=>o.tardiness_s==null?'未完工，单列':time(o.tardiness_s)}]}/></Panel><Panel title="原生核对证据"><KeyValues data={current.native}/></Panel></>}
+ {byGroup.size>0&&<Panel title="原生执行任务" action={<label>比较批次<select aria-label="比较批次" value={chosenGroup} onChange={e=>setGroup(e.target.value)}>{[...byGroup].map(([id,rows])=><option key={id} value={id}>{id==='legacy'?'历史方案（升级前）':stamp(rows[0].created_at)+' · '+id.slice(-6)} · {rows.length} 个任务</option>)}</select></label>}><p className="note">同一批比较串行执行，每个方案显示 Plant Simulation 窗口。下表区分仿真业务时间和实际计算耗时。 {displayed.length>0&&<a href="#scenario-results">查看结果分析 ↓</a>}</p><TaskList {...props} data={{...data,tasks}} limit={20}/></Panel>}
+ {resultIssue?.key===completeKey&&resultIssue.failed>0&&<div className="notice error" role="status">有 {resultIssue.failed} 条已完成运行暂无法读取，已加载的结果仍可查看。</div>}
+ {displayed.length>0&&<React.Fragment key={cp+':'+chosenGroup}>
+  {!readOnly&&chosenGroup&&chosenGroup!=='legacy'&&tasks.every(t=>['completed','failed','cancelled','interrupted','reconciliation_required'].includes(t.status))&&
+   <CaseSeal checkpoint={cp} comparison={chosenGroup} act={act} busy={busy} setPage={props.setPage}/>}
+  <ScenarioResults runs={displayed} expected={tasks.length} inspect={inspect}/>
+ </React.Fragment>}
  </>}
- </>}
-function Gantt({summary}:any){const segments=summary.segments.filter((s:any)=>s.start_s>=summary.kpi.window_start_s).slice(0,150);const machines=[...new Set(segments.map((s:any)=>s.resource))];return <Chart height={260} option={{tooltip:{formatter:(p:any)=>{const s=segments[p.dataIndex];return `${s.job} · ${s.kind}<br/>${time(s.start_s)} → ${time(s.end_s)}`}},grid:{left:75,right:25,top:20,bottom:40},xAxis:{type:'value',name:'业务小时'},yAxis:{type:'category',data:machines},series:[{type:'custom',data:segments.map((s:any)=>[machines.indexOf(s.resource),s.start_s/3600,s.end_s/3600,s.kind==='setup'?1:0]),renderItem:(params:any,api:any)=>{const start=api.coord([api.value(1),api.value(0)]),end=api.coord([api.value(2),api.value(0)]);return {type:'rect',shape:{x:start[0],y:start[1]-9,width:Math.max(2,end[0]-start[0]),height:18},style:{fill:api.value(3)?'#d6a04c':'#3f829c'}}}}]}}/>}
 
 export function Semantics({data,context,focus,setFocus,inspect,act}:any){
  const [tab,setTab]=useState('relations'),[graph,setGraph]=useState<any>(null),[sources,setSources]=useState<any>(null),[depth,setDepth]=useState(1),[expanded,setExpanded]=useState(false),[validation,setValidation]=useState<any>(null),[schemaFocus,setSchemaFocus]=useState(''),[refresh,setRefresh]=useState(0),[error,setError]=useState('');
  useEffect(()=>{let current=true;setGraph(null);setError('');const params=new URLSearchParams({context,focus:tab==='schema'?schemaFocus:focus,depth:String(depth),view:tab,expand:String(expanded),limit:'18'});api('/graph?'+params).then(x=>{if(current)setGraph(x)}).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[context,focus,depth,tab,expanded,refresh,schemaFocus,data.workspace?.id]);
  useEffect(()=>{let current=true;setValidation(null);api('/sources?context='+encodeURIComponent(context)).then(x=>{if(current)setSources(x)}).catch(()=>{});return()=>{current=false}},[context,refresh,data.workspace?.id]);
- return <><Panel title="聚焦业务关系" action={<div className="segmented">{[['relations','业务关系'],['route','工艺顺序'],['impact','影响与依据'],['schema','本体结构']].map(([v,n])=><button key={v} className={tab===v?'active':''} onClick={()=>setTab(v)}>{n}</button>)}</div>}>
+ const [layers,setLayers]=useState<any>(null);
+ useEffect(()=>{api('/ontology/layers').then(setLayers).catch(()=>{})},[]);
+ return <><Panel title={tab==='schema'?'TBox · 本体定义':'ABox · 实例与运行事实'} action={<div className="segmented">{[['relations','ABox · 业务关系'],['route','工艺顺序'],['impact','影响与依据'],['schema','TBox · 本体结构']].map(([v,n])=><button key={v} className={tab===v?'active':''} onClick={()=>setTab(v)}>{n}</button>)}</div>}>
+ <div className="flow-note ontology-layers">{tab==='schema'?<>TBox 声明制造类、关系与正式继承。选中概念可查看定义和适用的 ABox 校验规则。<br/><a href="/api/v2/ontology/tbox/ontology.ttl">本体入口 ↗</a> · <a href="/api/v2/ontology/tbox/simulation-shapes.ttl">仿真输入 SHACL ↗</a> · <a href="/api/v2/ontology/tbox/evidence.ttl">证据类定义 ↗</a></>:<>ABox 保存具体的设备、工单、工件和事件。当前版本的运行实例图 <code>{layers?.abox.production}</code>，溯源实例图 <code>{layers?.abox.provenance}</code>。</>}</div>
  <div className="graph-toolbar"><span>焦点 <b>{graph?.focus||graph?.route?.name||focus||'产品'}</b></span>{tab!=='route'&&<><label>展开深度<select value={depth} onChange={e=>setDepth(+e.target.value)}><option value={1}>1 层</option><option value={2}>2 层</option><option value={3}>3 层</option></select></label>{tab!=='schema'&&<label><input type="checkbox" checked={expanded} onChange={e=>setExpanded(e.target.checked)}/>展开工件</label>}</>}
  {tab==='route'&&<select aria-label="选择产品工艺" value={graph?.route?.product||''} onChange={e=>setFocus(e.target.value)}>{data.spec.products.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select>}
  <button onClick={()=>{setFocus('');setSchemaFocus('')}}>回到默认焦点</button><button onClick={()=>setRefresh(v=>v+1)}>刷新所选版本</button></div>
- <p className="note">画布按事实、事理、行动分区，每区两列。只画当前所选节点的连接，关系名称在图下展开。{graph?.sequence!=null?' 当前固定版本 '+graph.sequence+'。':''}</p>
+ {tab!=='route'&&graph?.sequence!=null&&<p className="note">当前固定版本 {graph.sequence}。点击关系两端的对象可继续查看。</p>}
  {error?<p className="panel-pad negative" role="alert">{error}</p>:tab==='route'?<OrderedRoute route={graph?.route} inspect={inspect}/>:<BusinessCanvas key={tab+':'+(graph?.focus||'')} data={graph} select={tab==='schema'?setSchemaFocus:setFocus} inspect={(id:string)=>inspect(tab==='schema'?'schema/'+id:id)}/>}
- {graph?.omitted>0&&tab!=='schema'&&<p className="note">另有 {graph.omitted} 个对象；以其中一个对象为中心可继续查看。</p>}</Panel>
- <div className="two-columns"><Panel title="跨系统编号与单位映射"><Table rows={sources?.mapping||[]} columns={[{key:'equipment',title:'统一设备'},{key:'mes',title:'MES 编号'},{key:'opc',title:'OPC UA 编号'},{key:'conversion',title:'标准化'}]}/></Panel><Panel title="语义约束校验" action={<button onClick={()=>act(async()=>setValidation(await api('/validate?context='+encodeURIComponent(context))))}><FileCheck size={14}/>执行 SHACL 校验</button>}><div className="panel-pad"><p>SHACL 核查引用、工艺顺序、首选设备资格、执行时段和字段。投产、占用及库存等运行不变量在接入与执行边界另行核对。</p>{validation&&<><Badge value={validation.conforms?'通过':'不符合'}/>{validation.checks?.length>0&&<p>{validation.checks.join(' · ')}</p>}{validation.issues?.length>0&&<Table rows={validation.issues} columns={[{key:'object',title:'对象'},{key:'path',title:'属性'},{key:'message',title:'问题'}]}/>}<details><summary>查看 SHACL 原始报告</summary><pre>{validation.report}</pre></details></>}<p className="subtle">参考 IOF Core、ISA-95、SOSA、PROV-O；实际映射范围随本体版本保存，不宣称完整标准认证。</p></div></Panel></div>
+ </Panel>
+ {tab==='schema'&&<ProvenanceGraph/>}
+ <div className="two-columns"><Panel title="跨系统编号与单位映射"><Table rows={sources?.mapping||[]} columns={[{key:'equipment',title:'统一设备'},{key:'mes',title:'MES 编号'},{key:'opc',title:'OPC UA 编号'},{key:'conversion',title:'标准化'}]}/></Panel><Panel title="ABox 语义约束校验" action={<button onClick={()=>act(async()=>setValidation(await api('/validate?context='+encodeURIComponent(context))))}><FileCheck size={14}/>执行 SHACL 校验</button>}><div className="panel-pad"><p>核查工艺后继、首选设备资格、批次归属和设备占用。创建基线和提交方案前执行同一套规则。</p>{validation&&<><Badge value={validation.conforms?'通过':'不符合'}/> · 本体版本 {validation.sequence}{validation.checks?.length>0&&<p>{validation.checks.join(' · ')}</p>}{validation.issues?.length>0&&<Table rows={validation.issues} columns={[{key:'object',title:'对象',render:(row:any)=><button className="link" onClick={()=>inspect(row.object)}>{row.object} ↗</button>},{key:'path',title:'属性'},{key:'message',title:'问题'}]}/>}<details><summary>查看 SHACL 原始报告</summary><pre>{validation.report}</pre></details></>}</div></Panel></div>
  {sources?.issues?.length>0&&<Panel title="待处理数据问题"><Table rows={sources.issues} onRow={(i:any)=>inspect(i.id)} columns={[{key:'quality',title:'质量'},{key:'reason',title:'校验问题',render:(i:any)=><span className="wrap">{i.reason}</span>}]}/></Panel>}
  <Panel title={`最近来源记录 · 共 ${sources?.total||0} 条`} action={<span className="subtle">点击记录查看原始字段、接收时间与使用活动</span>}><Table rows={sources?.records||[]} onRow={(r:any)=>inspect(r.id)} columns={[{key:'source',title:'来源'},{key:'raw_id',title:'原始编号'},{key:'event_time',title:'事件时间',render:(r:any)=>time(r.event_time)},{key:'received_at',title:'接收时间',render:(r:any)=>stamp(r.received_at)},{key:'quality',title:'质量'},{key:'original_unit',title:'原始单位'},{key:'hash',title:'内容摘要',render:(r:any)=><code>{r.hash.slice(0,14)}…</code>}]}/></Panel>
  </>}
 
-export function Evidence(props:any){const{data,context,setContext,inspect,act,busy,readOnly}=props;const[history,setHistory]=useState<any>(null),[scope,setScope]=useState('business'),[verification,setVerification]=useState<any>(null),[legacy,setLegacy]=useState<any>(null);
+export function Evidence(props:any){
+ const [mode,setMode]=useState('cases');
+ return <>
+  <div className="toolbar segmented" aria-label="证据与回放视图"><button className={mode==='cases'?'active':''} onClick={()=>setMode('cases')}>推演闭环档案</button>
+   <button className={mode==='history'?'active':''} onClick={()=>setMode('history')}>历史回放与存档工具</button></div>
+  {mode==='cases'?<EvidenceCases {...props} revision={props.data.revision}/>:props.data.runtime?<EvidenceTools {...props}/>:<Empty>选择已有现场或运行后可使用历史回放工具。</Empty>}
+ </>;
+}
+
+function EvidenceTools(props:any){const{data,context,setContext,inspect,act,busy,readOnly}=props;const[history,setHistory]=useState<any>(null),[scope,setScope]=useState('business'),[verification,setVerification]=useState<any>(null),[legacy,setLegacy]=useState<any>(null);
  useEffect(()=>{let current=true;api('/history?context='+encodeURIComponent(scope==='audit'?'catalog':context)).then(x=>{if(current)setHistory(x)}).catch(()=>{});return()=>{current=false}},[context,scope,data.revision]);
  return <><div className="toolbar"><button disabled={busy} onClick={()=>act(async()=>setVerification(await api('/verify?context='+encodeURIComponent(scope==='audit'?'catalog':context))),'完整性检查完成')}><ShieldCheck size={15}/>校验签名与历史</button><a className="button" href={'/api/v2/export?context='+encodeURIComponent(context)}><Download size={15}/>导出证据包</a><label className="button"><Upload size={15}/>重载证据包<input hidden type="file" accept=".zip" disabled={readOnly} onChange={e=>{const file=e.target.files?.[0];if(file)act(async()=>{const res=await fetch('/api/v2/import',{method:'POST',headers:{'x-ontologysim':'v2','content-type':'application/zip'},body:file});const body=await res.json();if(!res.ok)throw Error(body.detail);return body},'本体证据包已核对并保存')}}/></label><button onClick={()=>act(async()=>setLegacy(await api('/legacy')))}>V0.1 只读历史</button><span className="toolbar-spacer"/><span className="subtle">历史只追加 · 更正产生新版本</span></div>
  {legacy&&<Panel title="V0.1 只读历史"><p className="note">{legacy.notice}</p>{legacy.objects.map((o:any)=><details className="panel-pad" key={o.id}><summary>{o.kind} · {o.id} · {stamp(o.updated)}</summary><pre>{JSON.stringify(o.data,null,2)}</pre></details>)}</Panel>}

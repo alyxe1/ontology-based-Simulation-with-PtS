@@ -12,6 +12,17 @@ export const stateNames:Row={active:'进行中',pending:'待投产',queued:'等�
 export function Badge({value}:{value:string}){return <span className={'badge '+value}>{stateNames[value]||value}</span>}
 export function Empty({children}:{children:React.ReactNode}){return <div className="empty">{children}</div>}
 export function Panel({title,action,children,className=''}:any){return <section className={'panel '+className}><div className="panel-heading"><h3>{title}</h3>{action}</div>{children}</section>}
-export function Table({columns,rows,onRow}:any){return <div className="table-scroll"><table><thead><tr>{columns.map((c:any)=><th key={c.key}>{c.title}</th>)}</tr></thead><tbody>{rows.map((r:any,i:number)=><tr key={r.id||i} onClick={()=>onRow?.(r)} className={onRow?'clickable':''}>{columns.map((c:any)=><td key={c.key}>{c.render?c.render(r):String(r[c.key]??'—')}</td>)}</tr>)}</tbody></table>{!rows.length&&<Empty>此上下文暂无记录</Empty>}</div>}
-export function Chart({option,height=290}:any){const ref=useRef<HTMLDivElement>(null);useEffect(()=>{const chart=echarts.init(ref.current!);chart.setOption(option);const observer=new ResizeObserver(()=>chart.resize());observer.observe(ref.current!);return()=>{observer.disconnect();chart.dispose()}},[option]);return <div ref={ref} style={{height}}/>}
+export function Table({columns,rows,onRow}:any){return <div className="table-scroll"><table><thead><tr>{columns.map((c:any)=><th key={c.key}>{c.title}</th>)}</tr></thead><tbody>{rows.map((r:any,i:number)=><tr key={r.rowKey??r.id??i} onClick={()=>onRow?.(r)} className={onRow?'clickable':''}>{columns.map((c:any)=><td key={c.key}>{c.render?c.render(r):String(r[c.key]??'—')}</td>)}</tr>)}</tbody></table>{!rows.length&&<Empty>此上下文暂无记录</Empty>}</div>}
+export function Chart({option,height=290,onPoint}:any){
+ const element=useRef<HTMLDivElement>(null),instance=useRef<echarts.ECharts|null>(null);
+ const click=useRef(onPoint);click.current=onPoint;
+ useEffect(()=>{
+  const chart=echarts.init(element.current!);instance.current=chart;
+  chart.on('click',params=>click.current?.(params));
+  const observer=new ResizeObserver(()=>chart.resize());observer.observe(element.current!);
+  return()=>{observer.disconnect();chart.dispose();instance.current=null};
+ },[]);
+ useEffect(()=>{instance.current?.setOption(option,{notMerge:true})},[option]);
+ return <div ref={element} style={{height}}/>;
+}
 export function KeyValues({data}:any){return <dl className="key-values">{Object.entries(data||{}).map(([k,v])=><React.Fragment key={k}><dt>{k}</dt><dd>{typeof v==='object'?JSON.stringify(v):String(v)}</dd></React.Fragment>)}</dl>}

@@ -52,6 +52,7 @@ class OntologyStore:
         self.lock = threading.RLock()
         self.signer = signer or Signer()
         self.defer_non_intent_flush = False
+        self.run_journal = None
         self.sequence = 0
         self.head = "0" * 64
         self._refresh_journal()
@@ -114,7 +115,13 @@ class OntologyStore:
     def find(self, kind, **filters):
         # Start with the indexed status for hot queries (pending events, queued jobs).
         status = filters.get('status')
-        if isinstance(status, str) and not isinstance(status, Ref):
+        assigned = filters.get('assigned')
+        if isinstance(assigned, Ref):
+            ids = (q.subject for q in self.store.quads_for_pattern(None, iri('assigned'), iri(assigned), STATE)
+                   if status is None or next(self.store.quads_for_pattern(q.subject, iri('status'), term(status), STATE),None))
+            rows = (self.get(decode(s)) for s in sorted(set(ids))
+                    if next(self.store.quads_for_pattern(s, ox.NamedNode(RDF+'type'), iri(kind), STATE),None))
+        elif isinstance(status, str) and not isinstance(status, Ref):
             ids = (q.subject for q in self.store.quads_for_pattern(None, iri('status'), term(status), STATE))
             rows = (self.get(decode(s)) for s in sorted(set(ids), key=lambda s:s.value)
                     if next(self.store.quads_for_pattern(s, ox.NamedNode(RDF+'type'), iri(kind), STATE),None))
@@ -138,6 +145,8 @@ class OntologyStore:
     def commit(self, changes, kind, *, actor="service/runtime", time_s=0.0, used=(), reason="", expected=None, details=None):
         """Replace only named current records; journal and old values are immutable."""
         with self.lock:
+            if self.run_journal and self.run_journal.failed:
+                raise OSError("仿真日志已中断，需要核对")
             if expected is not None and expected != self.sequence:
                 raise ValueError("版本已变化，请重新读取后提交")
             records = list(changes)
@@ -196,17 +205,23 @@ class OntologyStore:
                 for identity in used:audit.append(f"{version} <{PROV}wasDerivedFrom> {iri(input_versions[str(identity)])} .")
             payload['provenance']=[triple for triple in audit if str(iri('sequence')) not in triple and str(iri('publicKey')) not in triple]
             checksum=digest(payload)
-            audit += [f"{event} {iri('hash')} {term(checksum)} .",f"{event} {iri('payload')} {term(canonical(payload))} .",f"{event} {iri('signature')} {term(self.signer.sign(payload))} ."]
+            signature = self.signer.sign(payload)
+            audit += [f"{event} {iri('hash')} {term(checksum)} .",f"{event} {iri('payload')} {term(canonical(payload))} .",f"{event} {iri('signature')} {term(signature)} ."]
             inserts = "\n".join(t for r in records for t in self._triples(r))
             deletes = "\n".join(f"DELETE WHERE {{ GRAPH {STATE} {{ {iri(r['id'])} ?p ?o }} }};" for r in records)
             update = deletes + f" INSERT DATA {{ GRAPH {STATE} {{ {inserts} }} GRAPH {AUDIT} {{ {' '.join(audit)} }} }}"
             self.store.update(update)
-            # Private simulation branches force intents to disk before every native
-            # side effect. Derived state can share the following barrier; an
-            # interrupted unacknowledged intent still requires reconciliation.
+            # Force intent evidence to disk before the native side effect. Private
+            # branches sync the sequential signed log instead of the RDF indexes.
             try:
-                if not self.defer_non_intent_flush or kind in ('command_prepared','command_unknown'):self.store.flush()
+                durable_intent = kind in ('command_prepared','command_unknown')
+                if self.run_journal:
+                    self.run_journal.append({"payload":payload,"hash":checksum,"signature":signature,"public_key":self.signer.public},
+                                            sync=durable_intent)
+                elif not self.defer_non_intent_flush or durable_intent:
+                    self.store.flush()
             except Exception:
+                if self.run_journal:self.run_journal.failed=True
                 self._refresh_journal()
                 raise
             self.sequence = sequence; self.head = checksum
@@ -257,6 +272,7 @@ class OntologyStore:
         return report
 
     def export(self, path=None):
+        if self.run_journal and not self.run_journal.failed:self.run_journal.flush()
         self.store.flush()
         data = self.store.dump(format=ox.RdfFormat.TRIG)
         if path: atomic_write(path, data)

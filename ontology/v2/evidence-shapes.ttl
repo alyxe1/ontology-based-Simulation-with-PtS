@@ -1,0 +1,22 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+os:CaseEvidenceShape a sh:NodeShape ;
+    sh:targetClass os:EvidenceCase ;
+    sh:property [ sh:path prov:wasGeneratedBy ; sh:minCount 1 ; sh:maxCount 1 ; sh:class prov:Activity ] ;
+    sh:property [ sh:path prov:hadMember ; sh:qualifiedValueShape [ sh:class os:ArchivedBaseline ] ;
+                  sh:qualifiedMinCount 1 ; sh:qualifiedMaxCount 1 ] .
+
+os:RecordedFieldExecutionShape a sh:NodeShape ;
+    sh:targetClass os:FieldExecution ;
+    sh:property [ sh:path os:implementsDecision ; sh:minCount 1 ; sh:maxCount 1 ; sh:class os:AdoptionDecision ] ;
+    sh:property [ sh:path prov:wasAssociatedWith ; sh:minCount 1 ; sh:class prov:Agent ] ;
+    sh:property [ sh:path prov:startedAtTime ; sh:minCount 1 ; sh:datatype xsd:dateTime ; sh:lessThan prov:endedAtTime ] ;
+    sh:property [ sh:path prov:endedAtTime ; sh:minCount 1 ; sh:datatype xsd:dateTime ] .
+
+os:OutcomeEvaluationShape a sh:NodeShape ;
+    sh:targetClass os:OutcomeEvaluation ;
+    sh:property [ sh:path prov:wasGeneratedBy ; sh:minCount 1 ; sh:maxCount 1 ; sh:class prov:Activity ] ;
+    sh:property [ sh:path prov:wasDerivedFrom ; sh:qualifiedValueShape [ sh:class os:FieldOutcome ] ; sh:qualifiedMinCount 1 ] .

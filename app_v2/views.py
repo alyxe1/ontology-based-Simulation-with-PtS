@@ -1,20 +1,29 @@
 """Bounded business views and evidence traversal over the same ontology records."""
 from collections import deque
-from .graph import Ref, PROV, SCHEMA, decode
+from pyoxigraph import RdfFormat
+from rdflib import Graph, RDF, RDFS, OWL, URIRef, Namespace
+from rdflib.collection import Collection
+from .common import BASE, NS
+from .graph import Ref, PROV, SCHEMA
+from .simulation_contract import shape_summary, shapes
 
 LABELS={
     "Equipment":"设备","Capability":"设备资格","Product":"产品版本","BillOfMaterial":"毛坯 BOM",
     "OperationPlan":"工序","WorkOrder":"生产订单","Batch":"生产批次","MaterialLot":"原料批次",
     "Workpiece":"工件","Execution":"实际工序执行","Inspection":"检验结果","FixturePool":"夹具",
     "AssetState":"设备状态","Policy":"决策规则","Scenario":"推演方案","MaterialBalance":"物料结存",
-    "FixtureReservation":"夹具占用","RunResult":"运行结果","ScheduledEvent":"计划事件"
+    "FixtureReservation":"夹具占用","RunResult":"运行结果","ScheduledEvent":"计划事件",
+    "Checkpoint":"分析基线","Command":"原生执行意图","Clock":"运行时钟",
 }
 RULE_TYPES={"OperationPlan","BillOfMaterial","Capability","Policy","ProductionPlan","Mapping"}
-ACTION_TYPES={"Scenario","RunResult","Command","ScheduledEvent","BusinessRevision"}
+ACTION_TYPES={"Scenario","Checkpoint","RunResult","Command","ScheduledEvent","BusinessRevision","ArchivedBaseline",
+              "ArchivedRun","AdoptionDecision","FieldExecution","SimulationActivity","EvaluationActivity",
+              "OutcomeEvaluation","OrderComparison","ModelImprovement","EvidenceCase"}
 RELATIONS={"product":"对应产品","order":"属于订单","batch":"属于批次","material_lot":"原料来源",
            "operations":"具有工序","next_operation":"下一道工序","capabilities":"设备资格","resource":"使用设备",
            "fixture":"所需夹具","preferred":"首选设备","execution":"当前执行","operation":"执行工序",
-           "job":"关联工件","bom":"物料清单","assigned":"当前指派","location":"当前位置"}
+           "job":"关联工件","bom":"物料清单","assigned":"当前指派","location":"当前位置",
+           "operation_plan":"执行工序","busy":"占用工件"}
 
 def business_layer(kind):
     # Actual executions and inspection outcomes are observations; plans and
@@ -39,28 +48,71 @@ def product_route(graph,focus):
     } for i,r in enumerate(steps)],linked=product.get('route_encoding')=='linked',
         rework_to=steps[product['rework_index']]['id'])
 
+def schema_definition(graph):
+    schema=Graph().parse(data=graph.store.dump(format=RdfFormat.TURTLE,from_graph=SCHEMA),format="turtle")
+    for name in ("simulation.ttl", "evidence.ttl"):
+        schema.parse(BASE/"ontology/v2"/name,format="turtle")
+    return schema
+
+
+def concept_key(term):
+    if str(term).startswith(PROV):return "prov:"+str(term).removeprefix(PROV)
+    if str(term).startswith("http://www.w3.org/ns/sosa/"):return "sosa:"+str(term).rsplit("/",1)[1]
+    return str(term).removeprefix(NS)
+
+
+def concept_details(graph,identity):
+    schema=schema_definition(graph)
+    term=URIRef(PROV+identity[5:] if identity.startswith("prov:") else
+                "http://www.w3.org/ns/sosa/"+identity[5:] if identity.startswith("sosa:") else NS+identity)
+    if identity.startswith("prov:"):
+        schema.parse(BASE/"ontology/v2/prov-o.ttl",format="turtle")
+    elif identity.startswith("sosa:") and (None,RDFS.subClassOf,term) in schema:
+        return {"概念 URI":str(term),"定义名称":"观测","标准":"W3C SOSA"}, []
+    if (term,RDF.type,OWL.Class) not in schema:raise ValueError("本体概念不存在")
+    matches=Namespace("http://www.w3.org/2004/02/skos/core#")
+    attrs={"概念 URI":str(term),"定义名称":str(schema.value(term,RDFS.label) or identity)}
+    if comment:=schema.value(term,RDFS.comment):attrs["业务定义"]=str(comment)
+    if parents:=[str(p) for p in schema.objects(term,RDFS.subClassOf) if isinstance(p,URIRef)]:attrs["正式父类"]=parents
+    if mapped:=[str(p) for p in schema.objects(term,matches.closeMatch)]:attrs["近似标准映射"]=" · ".join(mapped)
+    return attrs, shape_summary(shapes(),term)
+
+
 def schema_view(graph,focus,limit,depth):
-    import pyoxigraph as ox
-    from rdflib import Graph, RDF, RDFS, OWL, URIRef
-    from rdflib.collection import Collection
-    from .common import NS
-    schema=Graph().parse(data=graph.store.dump(format=ox.RdfFormat.TURTLE,from_graph=SCHEMA),format="turtle")
-    classes={c for c in schema.subjects(RDF.type,OWL.Class) if isinstance(c,URIRef) and str(c).startswith(NS)}
-    key=lambda c:str(c).removeprefix(NS)
-    nodes={key(c):dict(id=key(c),label=str(schema.value(c,RDFS.label) or key(c)),kind="概念",layer=business_layer(key(c))) for c in classes}
+    schema=schema_definition(graph)
+    local={c for c in schema.subjects(RDF.type,OWL.Class) if isinstance(c,URIRef) and str(c).startswith(NS)}
+    prov=Graph().parse(BASE/"ontology/v2/prov-o.ttl",format="turtle")
+    parents={parent for c in local for parent in schema.objects(c,RDFS.subClassOf) if isinstance(parent,URIRef)}
+    # Render the formal standard hierarchy reached from the workbench vocabulary.
+    pending=list(parents)
+    while pending:
+        for parent in prov.objects(pending.pop(),RDFS.subClassOf):
+            if isinstance(parent,URIRef) and parent not in parents:parents.add(parent);pending.append(parent)
+    classes=local|parents
+    key=concept_key
+    aliases={"prov:Entity":"证据实体","prov:Activity":"活动","prov:Agent":"责任主体",
+             "prov:Plan":"计划","sosa:Observation":"观测"}
+    rules=shapes()
+    nodes={key(c):dict(id=key(c),label=str(schema.value(c,RDFS.label) or aliases.get(key(c)) or prov.value(c,RDFS.label) or key(c)),
+                       kind="制造与证据概念" if c in local else "标准概念",
+                       layer=business_layer(key(c)) if c in local else "标准",
+                       definition=str(schema.value(c,RDFS.comment) or ""),constraint_count=len(shape_summary(rules,c))) for c in classes}
     edges=[]
     def members(term):
         union=schema.value(term,OWL.unionOf) if term else None
         return list(Collection(schema,union)) if union else [term]
     for prop in set(schema.subjects(RDF.type,OWL.ObjectProperty)):
-        for domain in members(schema.value(prop,RDFS.domain)):
-            for target in members(schema.value(prop,RDFS.range)):
-                if domain in classes and target in classes:
-                    edges.append(edge(key(domain),key(target),key(prop),str(schema.value(prop,RDFS.label) or key(prop))))
-    connected={e[side] for e in edges for side in ('from','to')}
-    # One connected neighbourhood; extension/technical terms remain in glossary.
+        for domain in schema.objects(prop,RDFS.domain):
+            for target in schema.objects(prop,RDFS.range):
+                for source in members(domain):
+                    for destination in members(target):
+                        if source in classes and destination in classes:
+                            edges.append(edge(key(source),key(destination),key(prop),str(schema.value(prop,RDFS.label) or key(prop))))
+    for source in classes:
+        for target in set(schema.objects(source,RDFS.subClassOf))|set(prov.objects(source,RDFS.subClassOf)):
+            if target in classes:edges.append(edge(key(source),key(target),"rdfs:subClassOf","是其子类"))
     core=('Product','OperationPlan','Equipment','Capability','Batch','WorkOrder','Execution','Workpiece','MaterialLot','BillOfMaterial','Inspection','AssetState','ScheduledEvent','Scenario','FixturePool')
-    root=focus if focus in connected else 'Product'
+    root=focus if focus in nodes else 'Product'
     adj={k:set() for k in nodes}
     for e in edges:adj[e['from']].add(e['to']);adj[e['to']].add(e['from'])
     seen={root};ordered=[];queue=deque([(root,0)])
@@ -74,7 +126,7 @@ def schema_view(graph,focus,limit,depth):
     shown=set(ordered)
     return dict(nodes=[{**nodes[i],'focused':i==root} for i in ordered],
         edges=sorted((e for e in edges if e['from'] in shown and e['to'] in shown),key=lambda e:e['id']),
-        glossary=[nodes[i] for i in sorted(nodes) if i not in shown],total=len(nodes),omitted=len(nodes)-len(shown),focus=root,view='schema')
+        glossary=[nodes[i] for i in sorted(nodes)],total=len(seen),omitted=len(seen)-len(shown),focus=root,view='schema')
 
 def focused_graph(runtime,focus="",depth=1,limit=40,view="relations",expand=False,relation=""):
     graph=runtime.graph
@@ -99,7 +151,7 @@ def focused_graph(runtime,focus="",depth=1,limit=40,view="relations",expand=Fals
         for key,value in r.items():
             if key in RELATIONS:
                 for target in value if isinstance(value,list) else [value]:
-                    if isinstance(target,Ref):add(r['id'],target,key)
+                    if isinstance(target,Ref):add(r['id'],target,'operation_plan' if key=='operation' and r['type']=='Execution' else key)
     if route and not route['linked']:
         for step in route['steps']:
             if step['id'] in records and step['next_operation']:

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="urn:ontologysim:v2:Ontology" uri="core.ttl"/>
+  <uri name="urn:ontologysim:v2:EvidenceOntology" uri="evidence.ttl"/>
+  <uri name="urn:ontologysim:v2:SimulationOntology" uri="simulation.ttl"/>
+  <uri name="http://www.w3.org/ns/prov-o#" uri="prov-o.ttl"/>
+  <uri name="http://www.w3.org/ns/prov-o-20130430" uri="prov-o.ttl"/>
+</catalog>

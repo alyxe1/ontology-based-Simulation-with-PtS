@@ -1,2 +1,3 @@
 factory-reference/** -text
 factory-reference/source.jsonl -diff
+ontology/v2/prov-o.ttl -text

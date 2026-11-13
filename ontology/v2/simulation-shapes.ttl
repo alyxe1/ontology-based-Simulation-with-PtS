@@ -1,0 +1,122 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+os:SimulationClockShape a sh:NodeShape ;
+    sh:targetNode os:clock ;
+    sh:class os:Clock ;
+    sh:property [ sh:path os:time_s; sh:minCount 1; sh:maxCount 1; sh:minInclusive 0;
+                  sh:message "必须有唯一非负业务时间，单位为秒。" ] .
+
+os:SimulationPlanShape a sh:NodeShape ;
+    sh:targetNode os:configuration ;
+    sh:class os:ProductionPlan ;
+    sh:property [ sh:path os:horizon_s; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0;
+                  sh:message "必须有唯一正数统计终点，单位为秒。" ] .
+
+os:SimulationEquipmentShape a sh:NodeShape ;
+    sh:targetClass os:Equipment ;
+    sh:property [ sh:path os:speed; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0;
+                  sh:message "设备必须有唯一正数加工工时系数。" ] ;
+    sh:property [ sh:path os:shift_hours; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0; sh:maxInclusive 24;
+                  sh:message "设备每日开工时长必须大于零且不超过 24 小时。" ] ;
+    sh:property [ sh:path os:setup_s; sh:minCount 1; sh:maxCount 1; sh:minInclusive 0;
+                  sh:message "设备必须有唯一非负换型时长，单位为秒。" ] .
+
+os:SimulationOperationInputShape a sh:NodeShape ;
+    sh:targetClass os:OperationPlan ;
+    sh:property [ sh:path os:operation; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:string; sh:minLength 1;
+                  sh:message "工序必须有唯一非空的工序类型代码。" ] ;
+    sh:property [ sh:path os:material; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:string; sh:minLength 1;
+                  sh:message "工序必须有唯一非空的材料要求。" ] ;
+    sh:property [ sh:path os:tolerance_um; sh:minCount 1; sh:maxCount 1; sh:minExclusive 0;
+                  sh:message "工序必须有唯一正数精度要求，单位为微米。" ] .
+
+os:SimulationWorkpieceShape a sh:NodeShape ;
+    sh:targetClass os:Workpiece ;
+    sh:property [ sh:path os:status; sh:minCount 1; sh:maxCount 1;
+                  sh:in ("pending" "queued" "setup" "processing" "transfer" "done" "scrapped" "material_wait");
+                  sh:message "工件必须有唯一且已定义的运行状态。" ] ;
+    sh:property [ sh:path os:op_index; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:integer; sh:minInclusive 0;
+                  sh:message "工件当前工序索引必须是唯一的非负整数。" ] ;
+    sh:property [ sh:path os:queue_seq; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:integer; sh:minInclusive 0;
+                  sh:message "队列序号必须是唯一的非负整数。" ] ;
+    sh:property [ sh:path os:attempt; sh:minCount 1; sh:maxCount 1; sh:datatype xsd:integer; sh:minInclusive 0; sh:maxInclusive 1;
+                  sh:message "机加工工作空间最多允许一次返工。" ] .
+
+os:SimulationSnapshotShape a sh:NodeShape ;
+    sh:targetNode os:clock ;
+    sh:sparql [ sh:message "未结束的工件必须指向自身产品路线中的有效工序。";
+        sh:select """
+        PREFIX os: <urn:ontologysim:v2:>
+        SELECT $this ?value WHERE {
+          $this a os:Clock .
+          ?value a os:Workpiece; os:status ?status .
+          FILTER (?status NOT IN ("done", "scrapped"))
+          FILTER NOT EXISTS {
+            ?value os:product ?product; os:op_index ?index .
+            ?product os:operations ?op .
+            ?op a os:OperationPlan; os:index ?index .
+          }
+        } """ ] ;
+    sh:sparql [ sh:message "等待或占用设备的工件，当前位置必须与指派设备一致。";
+        sh:select """
+        PREFIX os: <urn:ontologysim:v2:>
+        SELECT $this ?value WHERE {
+          $this a os:Clock .
+          ?value a os:Workpiece; os:status ?status .
+          FILTER (?status IN ("queued", "setup", "processing"))
+          FILTER NOT EXISTS {
+            ?value os:assigned ?device; os:location ?device .
+            ?device a os:Equipment .
+          }
+        } """ ] ;
+    sh:sparql [ sh:message "加工或换型中的工件必须有匹配的有效执行，设备占用一致，并且结束时间在当前业务时间之后。";
+        sh:select """
+        PREFIX os: <urn:ontologysim:v2:>
+        SELECT $this ?value WHERE {
+          $this os:time_s ?now .
+          ?value a os:Workpiece; os:status ?status .
+          FILTER (?status IN ("setup", "processing"))
+          FILTER NOT EXISTS {
+            ?value os:execution ?execution; os:assigned ?device; os:product ?product; os:op_index ?index .
+            ?product os:operations ?op .
+            ?op os:index ?index .
+            ?execution a os:Execution; os:job ?value; os:resource ?device;
+                       os:operation_plan ?op; os:status "active"; os:start_s ?start; os:end_s ?end .
+            ?asset a os:AssetState; os:resource ?device; os:busy ?value; os:status ?status .
+            FILTER (?start <= ?now && ?end > ?now)
+          }
+        } """ ] ;
+    sh:sparql [ sh:message "当前指派设备必须有一条资格同时满足工件当前工序的类型、材料和精度。";
+        sh:select """
+        PREFIX os: <urn:ontologysim:v2:>
+        SELECT $this ?value WHERE {
+          $this a os:Clock .
+          ?value a os:Workpiece; os:status ?status; os:assigned ?device; os:product ?product; os:op_index ?index .
+          FILTER (?status IN ("queued", "setup", "processing"))
+          ?product os:operations ?op .
+          ?op os:index ?index; os:operation ?kind; os:material ?mat; os:tolerance_um ?required .
+          FILTER NOT EXISTS {
+            ?device os:capabilities ?cap .
+            ?cap os:operation ?kind; os:materials ?mat; os:tolerance_um ?actual .
+            FILTER (?actual <= ?required)
+          }
+        } """ ] ;
+    sh:sparql [ sh:message "工件的订单、产品和原料必须与所属生产批次一致。";
+        sh:select """
+        PREFIX os: <urn:ontologysim:v2:>
+        SELECT $this ?value WHERE {
+          $this a os:Clock .
+          ?value a os:Workpiece .
+          FILTER NOT EXISTS {
+            ?value os:batch ?batch; os:order ?order; os:product ?product; os:material_lot ?lot .
+            ?batch a os:Batch; os:order ?order; os:product ?product; os:material_lot ?lot .
+            ?order a os:WorkOrder; os:product ?product; os:material_lot ?lot .
+          }
+        } """ ] .
+
+os:SimulationMaintenanceShape a sh:NodeShape ;
+    sh:targetClass os:AssetState ;
+    sh:property [ sh:path os:maintenance_until; sh:minCount 1; sh:maxCount 1; sh:minInclusive 0;
+                  sh:message "设备状态必须有唯一非负维护截止时间，单位为秒。" ] .

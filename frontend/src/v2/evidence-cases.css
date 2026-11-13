@@ -1,0 +1,14 @@
+.case-toolbar,.case-fields,.case-steps{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap}
+.case-toolbar,.case-summary,.case-form{padding:12px 16px}
+.case-summary p{margin:6px 0 10px}
+.case-steps span{border:1px solid #d8e3e9;padding:6px 10px;color:#6c8290;background:#f6f9fa}
+.case-steps span.done{color:#2f6d60;border-color:#c5dfd5;background:#eef7f3}
+.case-form{display:grid;justify-items:start;gap:10px}
+.case-form label{display:grid;justify-items:start;gap:4px}
+.case-form textarea{width:min(620px,70vw);min-height:56px;padding:6px 8px;font:inherit;border:1px solid #c8d6df}
+.case-form label.case-check{display:flex;align-items:center;gap:7px}
+.case-form .table-scroll{width:100%}
+.case-form td input.case-date{max-width:210px}
+.case-observation{padding:10px 16px;border-bottom:1px solid #e5edf1}
+.case-summary summary{cursor:pointer}
+.ontology-layers code{overflow-wrap:anywhere}

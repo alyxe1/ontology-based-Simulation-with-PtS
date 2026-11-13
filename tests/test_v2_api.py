@@ -143,6 +143,32 @@ def test_five_paired_groups_and_rejected_assignment(web):
     rejected=web.post('/api/v2/scenarios',json={'checkpoint_id':cp,'patch':{'name':'invalid','assignments':{'J00001':'CNC03'}}})
     assert rejected.status_code==400 and len(w.tasks())==before
 
+
+def test_comparison_mapping_uses_sealed_abox_and_rejects_invalid_route(web):
+    w=initialize(web)
+    feed(w)
+    cp=web.post('/api/v2/checkpoints').json()
+    request={'checkpoint_id':cp['id'],'scenarios':[{'name':'交期优先','rule':'EDD'}]}
+    response=web.post('/api/v2/compare/validate',json=request)
+    assert response.status_code==200,response.text
+    plan=response.json()
+    mapping=plan['mapping']
+    assert mapping['graph_head']==cp['graph_head'] and mapping['source_cursor']==0
+    assert mapping['shacl']['conforms'] and mapping['seeds']==[5202]
+    assert len(mapping['workpieces'])==120 and len(mapping['resources'])==6
+    assert mapping['resources'][0]['station']=='.Models.Model.OntologySim.R0.Machine'
+    assert mapping['workpieces'][0]['native_path'] is None
+    assert any(op['id']=='P1/CUT' and op['next_operation']=='P1/ROUGH' for op in mapping['operations'])
+    graph=w.context(cp['id']).graph
+    job=graph.get('J00001')
+    job['op_index']=999
+    graph.commit([job],'test_invalid_comparison_input')
+    count=len(w.tasks())
+    for route in ('/compare/validate','/compare'):
+        rejected=web.post('/api/v2'+route,json=request)
+        assert rejected.status_code==400 and 'J00001' in rejected.json()['detail']
+    assert len(w.tasks())==count
+
 def test_reset_reuses_only_verified_unchanged_trace(web,monkeypatch):
     from pathlib import Path
     import hashlib

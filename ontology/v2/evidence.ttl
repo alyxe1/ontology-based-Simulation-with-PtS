@@ -1,0 +1,33 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+
+os:EvidenceOntology a owl:Ontology ;
+    rdfs:label "生产推演闭环证据词汇" .
+
+os:EvidenceCase a owl:Class ; rdfs:subClassOf prov:Collection ; rdfs:label "推演闭环档案" .
+os:ArchivedBaseline a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "封存分析基线" .
+os:ArchivedRun a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "封存仿真运行" .
+os:AdoptionDecision a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "方案采纳决定" .
+os:FieldExecution a owl:Class ; rdfs:subClassOf prov:Activity ; rdfs:label "现场方案执行" .
+os:FieldOutcome a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "现场结果记录" .
+os:OutcomeEvaluation a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "仿真与实际对照" .
+os:ModelImprovement a owl:Class ; rdfs:subClassOf prov:Plan ; rdfs:label "模型改进建议" .
+os:recordsExecution a owl:ObjectProperty ; rdfs:domain prov:Activity ; rdfs:range os:FieldExecution ; rdfs:label "登记现场执行" .
+os:implementsDecision a owl:ObjectProperty ; rdfs:domain os:FieldExecution ; rdfs:range os:AdoptionDecision ; rdfs:label "执行所采纳的决定" .
+os:triggeredBy a owl:DatatypeProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:label "触发异常编号" .
+os:affectedWorkpiece a owl:DatatypeProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:label "受影响工件编号" .
+
+os:SimulationActivity a owl:Class ; rdfs:subClassOf prov:Activity ; rdfs:label "仿真执行" .
+os:EvaluationActivity a owl:Class ; rdfs:subClassOf prov:Activity ; rdfs:label "现场效果评估" .
+os:OrderComparison a owl:Class ; rdfs:subClassOf prov:Entity ; rdfs:label "工单效果对照" .
+os:documentsStateOf a owl:ObjectProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:label "固定异常状态" .
+os:containsAffectedWorkpiece a owl:ObjectProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:range os:Workpiece ; rdfs:label "记录受影响工件" .
+os:containsAffectedOrder a owl:ObjectProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:range os:WorkOrder ; rdfs:label "记录受影响工单" .
+os:comparesOrder a owl:ObjectProperty ; rdfs:domain os:OrderComparison ; rdfs:range os:WorkOrder ; rdfs:label "对照同一工单" .
+os:hasOrderComparison a owl:ObjectProperty ; rdfs:domain os:OutcomeEvaluation ; rdfs:range os:OrderComparison ; rdfs:label "包含工单对照" .
+os:inSnapshot a owl:ObjectProperty ; rdfs:range os:ArchivedBaseline ; rdfs:label "来自该快照" .
+os:recordIRI a owl:AnnotationProperty ; rdfs:label "原运行实例标识" .
+os:observesExecution a owl:ObjectProperty ; rdfs:domain os:FieldOutcome ; rdfs:range os:FieldExecution ; rdfs:label "记录该现场执行的效果" .
+os:basedOnObservation a owl:ObjectProperty ; rdfs:domain os:ArchivedBaseline ; rdfs:range os:Observation ; rdfs:label "依据该观测" .

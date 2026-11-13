@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import math
+from collections import Counter
 from .common import BASE, EPS, digest, uid
 from .graph import OntologyStore, Ref
 from .specification import spec_records, qualification, validate_ontology
@@ -78,18 +79,20 @@ class OntologyRuntime:
         self.update([*changes,intent],kind,used,reason)
 
     def select_resource(self,job,op):
-        choices=[r["resource"] for r in qualification(self.graph,op["id"]) if r["eligible"]]
         override=self.graph.get("assignment/"+job["id"])
         if override and override["op_index"]==job["op_index"]:return override["resource"]
         if not self.policy["reroute"]:return op["preferred"]
+        choices=[r["resource"] for r in qualification(self.graph,op["id"]) if r["eligible"]]
+        queues=Counter(j["assigned"] for j in self.graph.find("Workpiece",status="queued"))
+        family=self.graph.get(job["product"])["family"]
+        at=self.time
         def score(rid):
             resource=self.graph.get(rid);asset=self.graph.get(rid+"/state")
-            queue=[j for j in self.jobs() if j["assigned"]==rid and j["status"]=="queued"]
             busy=0.
             if asset["busy"]:
-                j=self.graph.get(asset["busy"]);x=self.graph.get(j["execution"]);busy=max(0,x["end_s"]-self.time)
-            setup=resource["setup_s"] if asset["family"]!=self.graph.get(job["product"])["family"] else 0.
-            return max(0,asset["maintenance_until"]-self.time)+busy+len(queue)*op["duration_s"]*resource["speed"]+setup,rid
+                j=self.graph.get(asset["busy"]);x=self.graph.get(j["execution"]);busy=max(0,x["end_s"]-at)
+            setup=resource["setup_s"] if asset["family"]!=family else 0.
+            return max(0,asset["maintenance_until"]-at)+busy+queues[rid]*op["duration_s"]*resource["speed"]+setup,rid
         return min(choices,key=score)
 
     def release_or_arrive(self,native,event):
@@ -186,12 +189,15 @@ class OntologyRuntime:
                     asset=self.graph.get(event["resource"]+"/state");asset.update(status="idle",maintenance_until=0.,tool_count=0.);event["status"]="completed"
                     self.update([asset,event],"maintenance_finished",["rule/maintenance-v1"],"维护时长完成，刀具寿命复位")
         else:raise RuntimeError("语义事件未收敛")
+        policy=self.policy
+        at=self.time
+        horizon=self.config["horizon_s"]
         for resource in self.graph.entities("Equipment"):
             rid=resource["id"];asset=self.graph.get(rid+"/state")
-            hours=self.policy["shift_hours"] or resource["shift_hours"]
-            if asset["busy"] or asset["maintenance_until"]>self.time+EPS or self.time%86400>=hours*3600-EPS or self.time>=self.config["horizon_s"]-EPS:continue
-            jobs=[j for j in self.jobs() if j["status"]=="queued" and j["assigned"]==rid]
-            def key(j):return (self.graph.get(j["order"])["due_s"] if self.policy["rule"]=="EDD" else 0,j["queue_seq"],j["id"])
+            hours=policy["shift_hours"] or resource["shift_hours"]
+            if asset["busy"] or asset["maintenance_until"]>at+EPS or at%86400>=hours*3600-EPS or at>=horizon-EPS:continue
+            jobs=self.graph.find("Workpiece",status="queued",assigned=Ref(rid))
+            def key(j):return (self.graph.get(j["order"])["due_s"] if policy["rule"]=="EDD" else 0,j["queue_seq"],j["id"])
             for job in sorted(jobs,key=key):
                 op=self.operation(job)
                 if op["fixture"]:

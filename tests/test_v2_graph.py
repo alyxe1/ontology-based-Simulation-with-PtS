@@ -52,3 +52,29 @@ def test_no_shadow_state_and_material_plan():
     assert r.__dict__=={"graph":g}
     assert all(isinstance(j["batch"],Ref) for j in r.jobs())
     assert len(r.pending_events())==120
+def test_native_intent_is_synced_before_call_and_survives_failure(tmp_path, monkeypatch):
+    from app_v2.run_journal import RunJournal
+
+    graph = OntologyStore()
+    runtime = OntologyRuntime.create(graph, default_spec())
+    journal = RunJournal(tmp_path)
+    graph.run_journal = journal
+    try:
+        def reject_sync():
+            raise OSError("simulated journal failure")
+
+        called = []
+        monkeypatch.setattr(journal, "flush", reject_sync)
+        with pytest.raises(OSError, match="simulated journal failure"):
+            runtime.command(None, "test_effect", lambda: called.append(True), [])
+        assert called == []
+        assert journal.failed
+        [intent] = graph.entities("Command")
+        assert intent["status"] == "prepared"
+        [record] = [json.loads(line) for line in journal.path.read_text(encoding="utf-8").splitlines()]
+        assert record == graph.records()[-1]
+        assert verify_records([*graph.records()[:-1], record])["valid"]
+        with pytest.raises(OSError, match="需要核对"):
+            runtime.command(None, "test_effect", lambda: called.append(True), [])
+    finally:
+        journal.close()

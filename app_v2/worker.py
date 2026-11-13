@@ -12,6 +12,7 @@ from .graph import OntologyStore, encode_record
 from .specification import ProductionSpec
 from .runtime import OntologyRuntime
 from .native import PlantAdapter
+from .run_journal import RunJournal
 
 def public_frame(runtime,previous,cursor):
     """Only observations already made. Never publishes generator RNG or future processing outcomes."""
@@ -41,17 +42,22 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
         if retained:retained.close();retained=None
         if task["kind"]=="shutdown":emit("shutdown",{});return
         task_id=task["id"];out=Path(task["output"]);out.mkdir(parents=True,exist_ok=True)
-        native=None;graph=None;runtime=None;trace=None
+        native=None;graph=None;runtime=None;trace=None;journal=None
         try:
             signer=Signer(key_path)
             if task['kind'] in ('view','scenario','continuation'):visible.set()
             else:visible.clear()
             if task["kind"]=="baseline":
                 graph=OntologyStore(out/"ontology",signer)
+                journal=RunJournal(out)
+                graph.run_journal=journal
                 runtime=OntologyRuntime.create(graph,ProductionSpec.model_validate(task["spec"]),seed=2606)
                 trace=(out/"source.jsonl").open("w",encoding="utf-8")
             else:
                 graph=OntologyStore.restore(task["checkpoint"],signer=signer,destination=out/"ontology")
+                if task["kind"] in ("scenario","continuation"):
+                    journal=RunJournal(out)
+                    graph.run_journal=journal
                 runtime=OntologyRuntime(graph)
                 graph.commit([dict(id="analysis_basis",type="Scenario",checkpoint=task.get("checkpoint_id",""),branch=task_id,name=task.get("patch",{}).get("name","直接恢复"))],"branch_created",actor=task.get("actor","service/scenario"),time_s=runtime.time,used=["configuration","clock","policy"],reason="固定本体版本创建独立运行图")
                 if "seed" in task:
@@ -100,15 +106,18 @@ def worker_main(commands,notifications,cancel,pause,visible,capture,key_path):
             emit("done",{"task_id":task_id,"summary":summary,"native":evidence,"output":str(out),"elapsed_s":round(time.monotonic()-started,1)})
         except BaseException as ex:
             status="cancelled" if isinstance(ex,InterruptedError) else "failed"
-            uncertain=bool(graph and any(c['status']!='acknowledged' for c in graph.entities('Command')))
             if graph:
                 try:
                     graph.commit([],"run_"+status,time_s=runtime.time if runtime else 0,reason=str(ex),details={"hresult":getattr(ex,"hresult",None)})
-                    graph.export(out/"interrupted.trig")
                 except Exception:pass
+                try:graph.export(out/"interrupted.trig")
+                except Exception:pass
+            uncertain=bool((journal and journal.failed) or
+                           (graph and any(c['status']!='acknowledged' for c in graph.entities('Command'))))
             emit(status,{"task_id":task_id,"status":"reconciliation_required" if uncertain else status,"message":str(ex),"hresult":getattr(ex,"hresult",None),"traceback":traceback.format_exc()})
         finally:
             if trace:trace.close()
+            if journal:journal.close()
             if native:
                 try:native.close()
                 except Exception as ex:emit("release_error",{"task_id":task_id,"message":str(ex)})

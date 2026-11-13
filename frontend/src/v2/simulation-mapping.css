@@ -1,0 +1,13 @@
+.simulation-mapping{border:1px solid #cbdde7;border-radius:5px;overflow:hidden;margin:12px 0 16px}
+.simulation-flow{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:8px;padding:12px;background:#edf5f8;color:#477183}
+.simulation-flow div{display:grid;gap:4px;padding:9px 10px;background:#fff;border:1px solid #d7e6ee;min-height:80px;border-radius:4px}
+.simulation-flow strong{color:#244e65;font-size:14px}
+.simulation-flow span,.simulation-flow small{font-size:11px;line-height:1.45}
+.simulation-mapping-summary{display:flex;flex-wrap:wrap;gap:8px 20px;padding:10px 12px;background:#f5f8fa;color:#426477}
+.simulation-mapping .toolbar{padding:8px 12px}
+.simulation-mapping td code,.simulation-mapping td small{display:block;overflow-wrap:anywhere;white-space:normal}
+.simulation-mapping td small{color:#547081;margin-top:3px}
+.simulation-mapping details{padding:10px 12px}
+.simulation-mapping-meta{display:grid;gap:5px;padding-top:8px;overflow-wrap:anywhere}
+.simulation-mapping-meta a{margin-left:8px}
+@media(max-width:800px){.simulation-flow{grid-template-columns:repeat(2,minmax(0,1fr))}.simulation-flow>svg{display:none}}

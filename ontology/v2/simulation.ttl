@@ -1,0 +1,31 @@
+@prefix os: <urn:ontologysim:v2:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+os:SimulationOntology a owl:Ontology ;
+    owl:versionInfo "1.0" ;
+    owl:imports os:Ontology ;
+    rdfs:label "生产仿真输入词汇" .
+
+os:Workpiece rdfs:comment "由生产批次投产的单件。当前工艺位置、队列序号和执行引用共同描述在制状态。" .
+os:OperationPlan rdfs:comment "产品版本下可执行的工序定义，包含顺序、工艺要求及标准工时。正常后继由 next_operation 表达，返工依据产品检验规则。" .
+os:Execution rdfs:comment "某件工件在指定设备上的一次加工或换型，具有开始时间、预计结束时间和执行状态。" .
+os:AssetState rdfs:comment "某台设备在该 ABox 版本的运行状态，记录占用、当前产品族、刀具使用和维护截止时间。" .
+os:ScheduledEvent rdfs:comment "计划发生的状态变更，按业务时间、优先级及事件标识确定处理顺序。" .
+os:Clock rdfs:comment "已提交业务时间和状态边界。恢复时与新建原生模型的本地时钟建立偏移映射。" .
+os:time_s a owl:DatatypeProperty ; rdfs:label "业务时间（秒）" .
+os:horizon_s a owl:DatatypeProperty ; rdfs:domain os:ProductionPlan ; rdfs:label "仿真统计终点（秒）" .
+os:duration_s a owl:DatatypeProperty ; rdfs:label "时长（秒）" .
+os:speed a owl:DatatypeProperty ; rdfs:domain os:Equipment ; rdfs:label "设备加工工时系数" .
+os:shift_hours a owl:DatatypeProperty ; rdfs:label "日开工时长（小时）" .
+os:setup_s a owl:DatatypeProperty ; rdfs:domain os:Equipment ; rdfs:label "设备换型时间（秒）" .
+os:maintenance_until a owl:DatatypeProperty ; rdfs:domain os:AssetState ; rdfs:label "维护解除业务时间（秒）" .
+os:op_index a owl:DatatypeProperty ; rdfs:domain os:Workpiece ; rdfs:range xsd:integer ; rdfs:label "当前工序索引" .
+os:queue_seq a owl:DatatypeProperty ; rdfs:domain os:Workpiece ; rdfs:range xsd:integer ; rdfs:label "等待队列序号" .
+os:due_s a owl:DatatypeProperty ; rdfs:label "计划时间或订单交期（秒）" .
+os:start_s a owl:DatatypeProperty ; rdfs:label "活动开始时间（秒）" .
+os:end_s a owl:DatatypeProperty ; rdfs:label "活动结束时间（秒）" .
+os:tolerance_um a owl:DatatypeProperty ; rdfs:label "精度（微米）" .
+os:material a owl:DatatypeProperty ; rdfs:label "材料代码" .
+os:materials a owl:DatatypeProperty ; rdfs:label "设备资格覆盖的材料代码" .

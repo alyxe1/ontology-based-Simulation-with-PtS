@@ -18,6 +18,34 @@
     "verified": true
   },
   "same_state": true,
+  "visible_maintenance_benchmark": {
+    "baseline": "CNC01 维护，120 件工件，EDD 与合格设备改派",
+    "end_business_s": 6200,
+    "boundaries": 174,
+    "before": {"initialization_s": 7.573, "execution_s": 39.622},
+    "after": {"initialization_s": 3.904, "execution_s": 10.490},
+    "native_visible": true,
+    "native_speed": 100,
+    "real_time": false,
+    "same_event_order_and_state": true,
+    "native_verified": true
+  },
+  "signed_reference_revalidation": {
+    "model_contract": "4d0cb55faaf4d26d5df2097c0828d24bbfc84e4217a8ea8804677b8b651fabf5",
+    "identical_frames": 958,
+    "journal_records_verified": 4115,
+    "native_verified": true
+  },
+  "visible_full_scenario": {
+    "origin_business_s": 3092.752784,
+    "end_business_s": 129600,
+    "elapsed_from_submission_s": 71.33,
+    "reported_loop_s": 61.5,
+    "completed": 120,
+    "journal_records": 4243,
+    "native_visible": true,
+    "native_verified": true
+  },
   "default_reference": {
     "frames": 958,
     "verified": true,

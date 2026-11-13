@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from 'react';
-import {CheckCircle2,Play,Plus} from 'lucide-react';
+import {CheckCircle2,GitBranch,Play,Plus} from 'lucide-react';
 import {api,Badge,Panel,Table,time} from './ui';
+import {SimulationMapping} from './simulation-mapping';
 import './scenario-composer.css';
 
 type Draft={name:string;rule?:'FIFO'|'EDD';reroute?:boolean;shift_hours?:number;assignments:Record<string,string>};
@@ -18,6 +19,7 @@ export function ScenarioComposer({cp,inspect,act,busy,readOnly,onSubmitted}:any)
  const [drafts,setDrafts]=useState<Draft[]>([]),[active,setActive]=useState(0),[template,setTemplate]=useState('edd');
  const [onlyAffected,setOnlyAffected]=useState(true),[jobId,setJobId]=useState(''),[equipment,setEquipment]=useState('');
  const [samples,setSamples]=useState<1|5>(1),[preview,setPreview]=useState<{key:string;plan:any}|null>(null);
+ const [mappingOpen,setMappingOpen]=useState(false);
  useEffect(()=>{
   let current=true;
   api('/checkpoints/'+encodeURIComponent(cp)+'/options').then(row=>{if(current)setOptions(row)}).catch(err=>{if(current)setLoadError(err.message)});
@@ -81,10 +83,12 @@ export function ScenarioComposer({cp,inspect,act,busy,readOnly,onSubmitted}:any)
   <h4>3. 校验并提交 Plant Simulation</h4>
   <div className="toolbar">
    <label>配对样本<select aria-label="配对样本" value={samples} onChange={e=>setSamples(+e.target.value as 1|5)}><option value={1}>快速比较 · 1 组</option><option value={5}>多次验证 · 5 组</option></select></label>
-   <button disabled={!draft||busy||readOnly} onClick={()=>act(async()=>{const result=await api('/compare/validate',body);setPreview({key,plan:result});return result},'方案通过基线与设备资格校验')}><CheckCircle2 size={14}/>校验方案</button>
+   <button disabled={!draft||busy||readOnly} onClick={()=>act(async()=>{setPreview(null);setMappingOpen(false);const result=await api('/compare/validate',body);setPreview({key,plan:result});return result},'方案通过基线与设备资格校验')}><CheckCircle2 size={14}/>校验方案</button>
+   {plan?.mapping&&<button aria-expanded={mappingOpen} onClick={()=>setMappingOpen(open=>!open)}><GitBranch size={14}/>{mappingOpen?'收起模型映射':'查看本体 → 仿真模型映射'}</button>}
    <button className="primary" disabled={!plan||busy||readOnly} onClick={()=>act(async()=>{const tasks=await api('/compare',body);onSubmitted(tasks);setPreview(null);return tasks},'方案已排队，Plant Simulation 将逐个打开并执行')}><Play size={14}/>运行比较{plan?` · ${plan.task_count} 个任务`:''}</button>
   </div>
   {plan&&<Table rows={plan.scenarios} columns={[{key:'name',title:'已校验方案'},{key:'rule',title:'派工顺序',render:(p:any)=>policyLabel(p.rule)},{key:'reroute',title:'设备分配',render:(p:any)=>p.recalculate_queue?(p.reroute?'自动改派':'回首选设备'):'保留现有队列；后续'+(p.reroute?'按资格改派':'用首选设备')},{key:'shift_hours',title:'班次',render:(p:any)=>shiftLabel(p.shift_hours)},{key:'assignments',title:'已核准指派',render:(p:any)=>p.assignments.map((a:any)=>a.job+' → '+a.target).join('，')||'—'}]}/>}
+  {mappingOpen&&plan?.mapping&&<SimulationMapping mapping={plan.mapping} inspect={inspect}/>}
   <div className="note">已开工工件不抢占。方案只修改派工、合格设备指派和开工班次；沿用同一工艺、订单、统计终点和配对样本。现场仍可继续接收观测，后续观测不进入这批方案。</div>
  </div>;
 }

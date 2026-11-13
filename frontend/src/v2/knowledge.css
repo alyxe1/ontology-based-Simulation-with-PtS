@@ -1,0 +1,30 @@
+.ontology-graph-workspace{--graph-border:#d5e2e9}
+.ontology-graph-toolbar,.ontology-graph-footer{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px 14px;background:#f4f8fa;color:#3f6174;font-size:12px;border-block:1px solid var(--graph-border)}
+.ontology-graph-toolbar label,.ontology-legend,.ontology-legend span{display:inline-flex;align-items:center;gap:6px}
+.ontology-legend{gap:12px;margin-right:auto}
+.ontology-legend i{width:10px;height:10px;border:1px solid;border-radius:2px}
+.ontology-graph-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(235px,27%);align-items:stretch}
+.ontology-network{position:relative;min-width:0;background:radial-gradient(circle,#ccdae2 1px,transparent 1px) 0 0/17px 17px,#f9fbfc}
+.ontology-network-host{width:100%;height:475px}
+.network-tools{display:flex;gap:4px;position:absolute;left:12px;bottom:12px}
+.network-tools button{padding:6px;background:#fff}
+.ontology-graph-inspector{min-width:0;max-height:475px;overflow:auto;padding:14px;border-left:1px solid var(--graph-border);background:#fff}
+.ontology-graph-inspector small,.ontology-graph-inspector p{color:#527181}
+.ontology-graph-inspector h3{margin:4px 0 8px}
+.ontology-graph-inspector h4{margin:14px 0 6px}
+.ontology-graph-inspector p{margin:6px 0;overflow-wrap:anywhere}
+.ontology-graph-inspector .actions{flex-wrap:wrap}
+.ontology-graph-footer{justify-content:space-between}
+.ontology-graph-details{padding:8px 14px;border-bottom:1px solid var(--graph-border)}
+.network-triples{padding:0;margin:0;list-style:none}
+.network-triples li{display:flex;align-items:center;flex-wrap:wrap;gap:4px;border-bottom:1px solid #e8eff3;padding:5px 0;font-size:12px}
+.network-triples li.selected{background:#edf6fa}
+.network-triples .link{padding:3px 4px;text-align:left}
+.network-triples .network-predicate{padding:2px 4px;color:#2d5a70;background:#edf4f7;border-color:#e0ecf1;font-size:11px}
+.ontology-graph-details .network-triples{columns:2}
+@media(max-width:880px){
+ .ontology-graph-split{grid-template-columns:1fr}
+ .ontology-graph-inspector{border-left:0;border-top:1px solid var(--graph-border);max-height:290px}
+ .ontology-network-host{height:395px}
+ .ontology-graph-details .network-triples{columns:1}
+}

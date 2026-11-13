@@ -1,0 +1,9 @@
+.prov-canvas{position:relative;border-block:1px solid #dde7ed;background:#f9fcfd}
+.prov-network{width:100%;height:420px}
+.prov-fit{position:absolute;right:12px;bottom:10px}
+.prov-legend{display:flex;gap:12px;flex-wrap:wrap;padding:9px 15px;color:#567182;font-size:12px}
+.prov-legend span{display:inline-flex;align-items:center;gap:5px}
+.prov-legend i{width:12px;height:10px;border:1px solid #a7bac6}
+.prov-node-actions{margin:10px 0;flex-wrap:wrap}
+.prov-identifiers code{overflow-wrap:anywhere}
+.provenance-panel select{max-width:min(400px,65vw)}

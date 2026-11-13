@@ -20,10 +20,12 @@ from .contracts import SourceRecordEnvelope
 from .evidence import Signer
 from .graph import OntologyStore, Ref, encode_record, decode_record
 from .runtime import OntologyRuntime
-from .specification import ProductionSpec, default_spec, spec_from_graph, spec_records, qualification, validate_ontology
+from .specification import ProductionSpec, default_spec, spec_from_graph, spec_records, qualification
 from .worker import worker_main
 from .publisher import NEXT_MAINTENANCE, publisher_main
 from .invariants import validate_boundary
+from .simulation_contract import build_mapping, require_simulation_input
+from .run_journal import JOURNAL_NAME
 from .views import impact
 
 class Workbench:
@@ -54,6 +56,16 @@ class Workbench:
         return self.graphs[workspace]
 
     def context(self,context="live"):
+        if "~" in context:
+            from pyoxigraph import RdfFormat
+            from .cases import read_artifact
+            case_id, item = context.split("~", 1)
+            if context not in self.views:
+                graph = OntologyStore(signer=self.signer)
+                graph.store.load(input=read_artifact(self, case_id, item + "/runtime.trig"), format=RdfFormat.TRIG)
+                graph._refresh_journal()
+                self.views[context] = OntologyRuntime(graph)
+            return self.views[context]
         if context=="live":
             active=self.active()
             if not active:return None
@@ -134,7 +146,10 @@ class Workbench:
     async def start(self):
         for task in self.catalog.entities("Task"):
             if task["status"] in ("running","pausing","paused","cancelling"):
-                task.update(status="interrupted",error="应用上次退出时任务未完成；可从已保存的本体边界恢复")
+                journal_exists=(Path(task["output"])/JOURNAL_NAME).is_file()
+                task.update(status="reconciliation_required" if journal_exists else "interrupted",
+                            error="应用上次退出时任务未完成，保留了原生命令日志；从最近已核对存档创建新运行"
+                            if journal_exists else "应用上次退出时任务未完成；可从已保存的本体边界恢复")
                 self.audit("task_interrupted",changes=[task])
         self.process=mp.Process(target=worker_main,args=(self.commands,self.notifications,self.cancel,self.pause,self.visible,self.capture,str(self.key_path)),daemon=False)
         self.process.start();self.pump_task=asyncio.create_task(self.pump())
@@ -485,8 +500,7 @@ class Workbench:
             if asset["maintenance_until"]>runtime.time+EPS:changes.append(runtime.event(prefix+"/"+asset["resource"],"maintenance_finished",asset["maintenance_until"],resource=asset["resource"],priority=15))
         policy=runtime.policy;policy["window_start_s"]=runtime.time;changes.append(policy)
         graph.commit(changes,"prediction_initialized",actor=actor,time_s=runtime.time,used=["configuration","clock"],reason="只使用已接收观测与已知计划；在加工剩余时长采用标准工时估计，未来样本独立于现场生成器")
-        report=validate_ontology(graph)
-        if not report["conforms"]:raise ValueError(report["report"])
+        require_simulation_input(runtime)
 
     def checkpoint(self,actor,incident_id=None,source_cursor=None):
         if self.resetting:raise ValueError('正在清理工作台，请稍候')
@@ -549,9 +563,13 @@ class Workbench:
                     source_cursor=cp.get("source_cursor"),incident_id=cp.get("incident_id"),
                     incident_title=cp.get("incident_title"),policy=r.policy,jobs=jobs)
 
-    def comparison_plan(self,checkpoint_id,repetitions=1,scenarios=None,patch=None):
+    def comparison_plan(self,checkpoint_id,repetitions=1,scenarios=None,patch=None,*,include_mapping=False):
         cp=self.context_record(checkpoint_id,'Checkpoint')
-        runtime=self.context(checkpoint_id);policy=runtime.policy
+        runtime=self.context(checkpoint_id)
+        report=require_simulation_input(runtime)
+        if runtime.graph.head!=cp["graph_head"] or report["sequence"]!=cp["graph_sequence"]:
+            raise ValueError("基线本体版本与登记摘要不一致")
+        policy=runtime.policy
         if runtime.time>=runtime.config["horizon_s"]-EPS:raise ValueError("所选基线已到达统计终点，请选择更早的基线")
         if scenarios is not None:
             names={"保持现状"};patches=[dict(name="保持现状")]
@@ -582,7 +600,9 @@ class Workbench:
             effective={key:p[key] if p.get(key) is not None else policy[key] for key in ("rule","reroute","shift_hours")}
             rules.append(dict(name=p["name"],**effective,recalculate_queue=p.get("reroute") is not None,assignments=assigned))
         preview=dict(checkpoint_id=checkpoint_id,time_s=runtime.time,horizon_s=runtime.config["horizon_s"],
+                     graph_sequence=report["sequence"],graph_head=runtime.graph.head,shacl_rule_hashes=report["shape_hashes"],
                      repetitions=repetitions,task_count=len(patches)*repetitions,scenarios=rules)
+        if include_mapping:preview["mapping"]=build_mapping(runtime,cp,preview,report)
         return cp,patches,preview
 
     def compare(self,checkpoint_id,actor,repetitions=1,patch=None,scenarios=None):

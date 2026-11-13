@@ -1,9 +1,16 @@
 import React,{useEffect,useState} from 'react';
 import {api,activityTitle,Badge,Empty,Panel,Table,time} from './ui';
 
-export function Playback({context,inspect}:any){
+export function Playback({context,inspect,startAt}:any){
  const [timeline,setTimeline]=useState<any>(null),[index,setIndex]=useState(0),[frame,setFrame]=useState<any>(null),[playing,setPlaying]=useState(false),[speed,setSpeed]=useState(1),[refresh,setRefresh]=useState(0),[filter,setFilter]=useState(''),[error,setError]=useState('');
- useEffect(()=>{let current=true;setTimeline(null);setFrame(null);setIndex(0);setPlaying(false);setError('');api('/replay/timeline?context='+encodeURIComponent(context)).then(t=>{if(current)setTimeline(t)}).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[context,refresh]);
+ useEffect(()=>{let current=true;setTimeline(null);setFrame(null);setIndex(0);setPlaying(false);setError('');api('/replay/timeline?context='+encodeURIComponent(context)).then(t=>{
+  if(!current)return;
+  setTimeline(t);
+  if(startAt!=null&&t.frames.length){
+   const first=t.frames.findIndex((f:any)=>f.time_s>=startAt-1e-6);
+   setIndex(first<0?t.frames.length-1:first);
+  }
+ }).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[context,refresh,startAt]);
  useEffect(()=>{if(!timeline?.frames.length)return;let current=true;api('/replay/frame?'+new URLSearchParams({context,head:String(timeline.head),index:String(index)})).then(f=>{if(current){setFrame(f);setError('')}}).catch(e=>{if(current){setError(e.message);setPlaying(false)}});return()=>{current=false}},[timeline,index,context]);
  useEffect(()=>{if(!playing||!frame||frame.index!==index)return;if(index>=frame.total-1){setPlaying(false);return}const id=setTimeout(()=>setIndex(i=>i+1),800/speed);return()=>clearTimeout(id)},[playing,frame,index,speed]);
  const seek=(i:number)=>{setPlaying(false);setIndex(Math.max(0,Math.min((timeline?.frames.length||1)-1,i)))};
