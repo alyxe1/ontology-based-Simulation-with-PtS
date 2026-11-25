@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {CheckCircle2,GitBranch,Play,Plus} from 'lucide-react';
 import {api,Badge,Panel,Table,time} from './ui';
 import {SimulationMapping} from './simulation-mapping';
@@ -20,6 +20,10 @@ export function ScenarioComposer({cp,inspect,act,busy,readOnly,onSubmitted}:any)
  const [onlyAffected,setOnlyAffected]=useState(true),[jobId,setJobId]=useState(''),[equipment,setEquipment]=useState('');
  const [samples,setSamples]=useState<1|5>(1),[preview,setPreview]=useState<{key:string;plan:any}|null>(null);
  const [mappingOpen,setMappingOpen]=useState(false);
+ const mappingPanel=useRef<HTMLDivElement>(null);
+ useEffect(()=>{
+  if(mappingOpen)mappingPanel.current?.scrollIntoView({block:'start'});
+ },[mappingOpen]);
  useEffect(()=>{
   let current=true;
   api('/checkpoints/'+encodeURIComponent(cp)+'/options').then(row=>{if(current)setOptions(row)}).catch(err=>{if(current)setLoadError(err.message)});
@@ -88,7 +92,7 @@ export function ScenarioComposer({cp,inspect,act,busy,readOnly,onSubmitted}:any)
    <button className="primary" disabled={!plan||busy||readOnly} onClick={()=>act(async()=>{const tasks=await api('/compare',body);onSubmitted(tasks);setPreview(null);return tasks},'方案已排队，Plant Simulation 将逐个打开并执行')}><Play size={14}/>运行比较{plan?` · ${plan.task_count} 个任务`:''}</button>
   </div>
   {plan&&<Table rows={plan.scenarios} columns={[{key:'name',title:'已校验方案'},{key:'rule',title:'派工顺序',render:(p:any)=>policyLabel(p.rule)},{key:'reroute',title:'设备分配',render:(p:any)=>p.recalculate_queue?(p.reroute?'自动改派':'回首选设备'):'保留现有队列；后续'+(p.reroute?'按资格改派':'用首选设备')},{key:'shift_hours',title:'班次',render:(p:any)=>shiftLabel(p.shift_hours)},{key:'assignments',title:'已核准指派',render:(p:any)=>p.assignments.map((a:any)=>a.job+' → '+a.target).join('，')||'—'}]}/>}
-  {mappingOpen&&plan?.mapping&&<SimulationMapping mapping={plan.mapping} inspect={inspect}/>}
+  {mappingOpen&&plan?.mapping&&<div ref={mappingPanel} className="simulation-mapping-anchor"><SimulationMapping mapping={plan.mapping} inspect={inspect}/></div>}
   <div className="note">已开工工件不抢占。方案只修改派工、合格设备指派和开工班次；沿用同一工艺、订单、统计终点和配对样本。现场仍可继续接收观测，后续观测不进入这批方案。</div>
  </div>;
 }

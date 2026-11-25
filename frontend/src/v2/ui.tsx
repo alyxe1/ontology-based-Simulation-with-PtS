@@ -11,6 +11,13 @@ export const activityTitle=(name:string)=>({factory_import:'建立生产本体',
 export const stateNames:Row={active:'进行中',pending:'待投产',queued:'等待',processing:'加工中',setup:'换型中',transfer:'转运中',maintenance:'维护中',idle:'可用',done:'已完成',scrapped:'已报废',material_wait:'待料',queued_task:'排队',running:'执行中',paused:'已暂停',cancelling:'取消中',cancelled:'已取消',completed:'完成',failed:'失败',interrupted:'中断',unknown:'待核对',reconciliation_required:'执行状态待核对'};
 export function Badge({value}:{value:string}){return <span className={'badge '+value}>{stateNames[value]||value}</span>}
 export function Empty({children}:{children:React.ReactNode}){return <div className="empty">{children}</div>}
+export function ServiceUpdateNotice(){
+ return <div className="panel-pad">
+  <div className="notice error" role="alert">当前后端仍是旧版，工位流转和全局图谱需要更新服务。</div>
+  <p>保存并结束正在运行的任务后，运行 <code>stop.cmd</code> 和 <code>start.cmd</code>，然后刷新此页。</p>
+  <button onClick={()=>window.location.reload()}>刷新页面</button>
+ </div>;
+}
 export function Panel({title,action,children,className=''}:any){return <section className={'panel '+className}><div className="panel-heading"><h3>{title}</h3>{action}</div>{children}</section>}
 export function Table({columns,rows,onRow}:any){return <div className="table-scroll"><table><thead><tr>{columns.map((c:any)=><th key={c.key}>{c.title}</th>)}</tr></thead><tbody>{rows.map((r:any,i:number)=><tr key={r.rowKey??r.id??i} onClick={()=>onRow?.(r)} className={onRow?'clickable':''}>{columns.map((c:any)=><td key={c.key}>{c.render?c.render(r):String(r[c.key]??'—')}</td>)}</tr>)}</tbody></table>{!rows.length&&<Empty>此上下文暂无记录</Empty>}</div>}
 export function Chart({option,height=290,onPoint}:any){

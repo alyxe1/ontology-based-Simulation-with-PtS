@@ -2,19 +2,20 @@ import React,{useState} from 'react';
 import {ArrowRight} from 'lucide-react';
 import {Badge,Table,time} from './ui';
 import {PagedTable} from './result-drilldown';
+import {InstanceMapping} from './instance-mapping';
 import './simulation-mapping.css';
 
-type Mapping={
+export type Mapping={
  checkpoint_id:string;graph_sequence:number;graph_head:string;source_cursor?:number;origin_s:number;horizon_s:number;
  engine:string;seeds:number[];shacl:{conforms:boolean;shape_files:string[];shape_hashes:Record<string,string>};
  native_clock:{path:string;initial_s:number;end_field:string;end_s:number;speed:number;real_time:boolean};
  resources:{id:string;name:string;state_id:string;status:string;queue_count:number;occupied_by:string;
-  label_field:string;buffer:string;station:string;speed:number;setup_s:number;shift_hours:number;tool_count:number;maintenance_until:number}[];
+  frame:string;label_field:string;buffer:string;station:string;speed:number;setup_s:number;shift_hours:number;tool_count:number;maintenance_until:number}[];
  operations:{id:string;name:string;product:string;index:number;next_operation?:string;operation:string;
   material:string;tolerance_um:number;fixture:string;preferred:string;duration_s:number;
   candidates:{resource:string;eligible:boolean;reason:string}[]}[];
- workpieces:{id:string;status:string;order:string;batch:string;operation?:string;operation_name?:string;queue_seq:number;
-  assigned:string;duration_s?:number;native_path?:string;native_field?:string;execution?:string;end_s?:number;remaining_s?:number;time_basis?:string}[];
+ workpieces:{id:string;status:string;order:string;batch:string;product:string;operation?:string;operation_name?:string;queue_seq:number;
+  assigned:string;location:string;duration_s?:number;native_path?:string;native_field?:string;execution?:string;end_s?:number;remaining_s?:number;time_basis?:string}[];
  events:{id:string;kind:string;job:string;resource:string;due_s:number;delay_s:number;priority:number;target?:string}[];
  fields:{stage:string;source:string;target:string;rule:string}[];
 };
@@ -22,7 +23,7 @@ const sec=(value:number)=>Number(value.toFixed(6))+' 秒';
 const eventNames:Record<string,string>={release:'投产',transfer_finished:'转运完成',maintenance_finished:'维护结束',process_finished:'加工完成',setup_finished:'换型完成'};
 
 export function SimulationMapping({mapping:m,inspect}:{mapping:Mapping;inspect:(id:string,context:string)=>void}){
- const [tab,setTab]=useState('fields'),[query,setQuery]=useState(''),[placed,setPlaced]=useState(true);
+ const [tab,setTab]=useState('instances'),[query,setQuery]=useState(''),[placed,setPlaced]=useState(true);
  const ref=(id:string,label?:string)=><button className="link" onClick={()=>inspect(id,m.checkpoint_id)}>{label||id} ↗</button>;
  const jobs=m.workpieces.filter(j=>(!placed||j.native_path)&&
   [j.id,j.order,j.batch,j.assigned,j.operation_name].some(v=>v?.toLowerCase().includes(query.trim().toLowerCase())));
@@ -37,8 +38,9 @@ export function SimulationMapping({mapping:m,inspect}:{mapping:Mapping;inspect:(
   <p className="note">这是本次已校验方案的装载预览。各方案先装载同一现场，再应用上方的干预。实际开工工时在工序派到设备后计算，原生回读随运行结果记录。</p>
   <div className="simulation-mapping-summary"><span>统计窗口 <strong>{time(m.origin_s)} — {time(m.horizon_s)}</strong></span><span>配对样本种子 <strong>{m.seeds.join('、')}</strong></span><span>原生速度 <strong>{clock.speed}</strong> · 非实时</span></div>
   <div className="toolbar segmented" aria-label="映射明细">
-   {[['fields','字段规则'],['equipment','设备与缓冲区'],['operations','工艺与设备资格'],['jobs','工件与剩余工时'],['events','计划事件']].map(([key,label])=><button className={tab===key?'active':''} key={key} onClick={()=>setTab(key)}>{label}</button>)}
+   {[['instances','实例映射'],['fields','字段规则'],['equipment','设备与缓冲区'],['operations','工艺与设备资格'],['jobs','工件与剩余工时'],['events','计划事件']].map(([key,label])=><button aria-pressed={tab===key} className={tab===key?'active':''} key={key} onClick={()=>setTab(key)}>{label}</button>)}
   </div>
+  {tab==='instances'&&<InstanceMapping mapping={m} inspect={inspect}/>}
   {tab==='fields'&&<Table rows={m.fields} columns={[
    {key:'stage',title:'阶段'},{key:'source',title:'本体输入',render:(r:any)=><code>{r.source}</code>},
    {key:'target',title:'原生字段或控制逻辑',render:(r:any)=><code>{r.target}</code>},{key:'rule',title:'转换方式'},

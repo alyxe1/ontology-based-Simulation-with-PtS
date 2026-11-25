@@ -1,4 +1,7 @@
 import json
+from http.cookies import SimpleCookie
+from types import SimpleNamespace
+import time
 import pytest
 from fastapi.testclient import TestClient
 from app_v2.main import create_app
@@ -8,6 +11,8 @@ from app_v2.worker import public_frame
 from app_v2.runtime import OntologyRuntime
 from app_v2.bundles import verify_bundle
 from app_v2.contracts import SourceRecordEnvelope
+from app_v2 import cases
+from app_v2.common import atomic_write, canonical
 
 @pytest.fixture
 def web(tmp_path,monkeypatch):
@@ -40,6 +45,50 @@ def test_auth_roles_and_csrf(web):
     assert web.get('/api/v2/state').status_code==200
     assert web.post('/api/v2/logout',headers={'x-ontologysim':'wrong'}).status_code==403
     assert web.post('/api/v2/logout',headers={'Origin':'https://unexpected.test'}).status_code==403
+
+def test_login_cookie_and_server_session_expire_after_thirty_days(web,monkeypatch):
+    issued = time.time()
+    clock = SimpleNamespace(time=lambda: issued)
+    monkeypatch.setattr('app_v2.auth.time',clock)
+    logged_in = web.post('/api/v2/login',json={'username':'owner','password':'test-only-long-password'})
+    assert logged_in.status_code == 200
+    cookie = SimpleCookie(logged_in.headers['set-cookie'])['ontologysim_session']
+    lifetime = 30 * 24 * 60 * 60
+    assert int(cookie['max-age']) == lifetime
+    clock.time = lambda: issued + lifetime - 1
+    assert web.get('/api/v2/state').status_code == 200
+    clock.time = lambda: issued + lifetime
+    assert web.get('/api/v2/state').status_code == 401
+
+def test_semantic_view_build_and_idle_upgrade_guard(web):
+    session = web.get('/api/v2/session').json()
+    assert session['semantic_views'] is True
+    assert len(session['backend_build']) == 64
+    workbench = initialize(web)
+    feed(workbench)
+    route_view = web.get('/api/v2/flow/route', params={'product':'P1'})
+    assert route_view.status_code == 200
+    assert route_view.json()['steps'][0]['id'] == 'P1/CUT'
+    workpiece = web.get('/api/v2/flow/workpieces/J00001')
+    assert workpiece.status_code == 200 and workpiece.json()['steps']
+    assert web.get('/api/v2/graph/overview').status_code == 200
+    state = web.app.state
+    state.server = SimpleNamespace(should_exit=False)
+    state.shutdown_token = 'test-upgrade-only'
+    route = '/api/v2/internal/upgrade-shutdown'
+    assert web.post(route).status_code == 403
+    headers = {'x-shutdown-token': state.shutdown_token}
+    state.workbench.active_task = 'test-running'
+    assert web.post(route, headers=headers).status_code == 409
+    assert not state.server.should_exit
+    state.workbench.active_task = None
+    assert web.post(route, headers=headers).status_code == 409
+    queued = next(task for task in workbench.tasks() if task['status'] == 'queued')
+    assert web.post(f"/api/v2/tasks/{queued['id']}/cancel").status_code == 200
+    assert web.post(route, headers=headers).status_code == 200
+    assert state.server.should_exit
+    assert web.post('/api/v2/logout').status_code == 503
+
 
 def test_live_baseline_isolation_and_lineage(web):
     w=initialize(web);mes=feed(w);assert w.active()['cursor']==0
@@ -93,6 +142,53 @@ def test_remove_baseline_and_reset_leave_empty_workbench_with_signed_history(web
     assert w.catalog.verify()['valid']
     assert checkpoint['id'] in {r['id'] for r in w.catalog.entities('Checkpoint')}
     assert all(r['payload']['sequence']>=state['reset']['sequence_after'] for r in web.get('/api/v2/history?context=catalog').json()['records'])
+
+def test_reset_removes_sealed_cases_and_old_proof_links_across_contexts(web):
+    w = initialize(web)
+    feed(w)
+    web.post(f"/api/v2/tasks/{w.tasks()[0]['id']}/cancel")
+    checkpoint = web.post('/api/v2/checkpoints').json()
+    workspace = w.active()['id']
+    case_id = 'case_before_reset'
+    artifact = w.root / 'evidence-cases' / case_id / 'baseline/runtime.trig'
+    content = w.context(checkpoint['id']).graph.export()
+    atomic_write(artifact, content)
+    record = dict(id=case_id,type='EvidenceCase',workspace=Ref(workspace),
+                  checkpoint=Ref(checkpoint['id']),name='Old case',objective='Fixture',
+                  created_at='2026-01-01', runs='[]',baseline=canonical(checkpoint),
+                  files=canonical({'baseline/runtime.trig':cases.checksum(content)}))
+    cases.append(w,case_id,'case_sealed','user/owner',[record],[],'fixture')
+    sealed = w.catalog.sequence
+    case_path = '/api/v2/evidence-cases/' + case_id
+    archived_context = case_id + '~baseline'
+    # The sealed case is independent of the regular context removal.
+    assert web.delete('/api/v2/contexts/'+workspace).status_code==200
+    assert [row['id'] for row in web.get('/api/v2/evidence-cases').json()]==[case_id]
+    assert web.get(case_path).status_code==200
+    assert web.get('/api/v2/replay/timeline',params={'context':archived_context}).status_code==200
+
+    assert web.post('/api/v2/reset',json={'confirm':'清空工作台'}).status_code==200
+    state = web.get('/api/v2/state').json()
+    assert state['runtime'] is None and state['workspaces']==state['tasks']==state['checkpoints']==[]
+    assert web.get('/api/v2/evidence-cases').json()==[]
+    for path in ('','/graph','/artifact/baseline/runtime.trig','/export','/verify','/prov'):
+        assert web.get(case_path+path).status_code==400
+    for context in (archived_context,checkpoint['id'],workspace):
+        assert web.get('/api/v2/replay/timeline',params={'context':context}).status_code==400
+        assert web.get('/api/v2/graph/overview',params={'context':context}).status_code==400
+    boundary = state['reset']['sequence_after']
+    for identity in (case_id,checkpoint['id'],workspace,f'{case_id}/revision/{sealed}',
+                     f'{case_id}/revision/{boundary}'):
+        assert web.get('/api/v2/evidence',params={'identity':identity,'context':'catalog'}).status_code==404
+    assert web.get('/api/v2/legacy').json()['objects']==[]
+    assert artifact.read_bytes()==content and w.catalog.verify()['valid']
+
+    initialize(web)
+    current = w.active()['id']
+    cases.append(w,'case_after_reset','case_sealed','user/owner',
+                 [{**record,'id':'case_after_reset','workspace':Ref(current)}],[],'new fixture')
+    assert [row['id'] for row in web.get('/api/v2/evidence-cases').json()]==['case_after_reset']
+    assert web.get('/api/v2/evidence-cases/case_after_reset').status_code==200
 
 
 def test_remove_current_workspace_keeps_unrelated_archive(web):

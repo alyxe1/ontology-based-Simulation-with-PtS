@@ -180,7 +180,7 @@ def focused_graph(runtime,focus="",depth=1,limit=40,view="relations",expand=Fals
                 total=len(visited),omitted=max(0,len(visited)-limit),focus=focus,view=view,sequence=graph.sequence,
                 aggregated_workpieces=sum(j['batch']==focus or j['product']==focus or j['order']==focus for j in runtime.jobs()) if not expand else 0)
 
-def lineage(graph,identity,limit=30):
+def lineage(graph,identity,limit=30,first_sequence=0):
     # Scan lightweight PROV relations to locate only relevant version activities.
     from .graph import iri,AUDIT
     import pyoxigraph as ox
@@ -198,6 +198,7 @@ def lineage(graph,identity,limit=30):
     for target in [iri(identity),*versions]:
         for q in graph.store.quads_for_pattern(None,ox.NamedNode(PROV+"used"),target,AUDIT):
             sequences.add(int(q.subject.value.rsplit("/",1)[-1]))
+    sequences={sequence for sequence in sequences if sequence>=first_sequence}
     result=[]
     for sequence in sorted(sequences,reverse=True)[:limit]:
         q=next(graph.store.quads_for_pattern(iri(f"commit/{sequence:09}"),iri("payload"),None,AUDIT),None)

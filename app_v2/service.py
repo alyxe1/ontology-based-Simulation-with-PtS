@@ -58,8 +58,9 @@ class Workbench:
     def context(self,context="live"):
         if "~" in context:
             from pyoxigraph import RdfFormat
-            from .cases import read_artifact
+            from .cases import case_record, read_artifact
             case_id, item = context.split("~", 1)
+            case_record(self, case_id)
             if context not in self.views:
                 graph = OntologyStore(signer=self.signer)
                 graph.store.load(input=read_artifact(self, case_id, item + "/runtime.trig"), format=RdfFormat.TRIG)
@@ -128,10 +129,11 @@ class Workbench:
         return self.replay_views[key]
 
     async def reset(self,actor):
-        if self.resetting or self.active_task or any(t['status']=='queued' for t in self.tasks()):
+        if self.resetting or self.active_task or any(t['status'] in ('queued','running','pausing','paused','cancelling') for t in self.tasks()):
             raise ValueError('请先完成或取消正在执行和排队的任务')
         self.resetting=True
         try:
+            await self.close_native_preview()
             await self.stop_source()
             workspaces=[{**row,'status':'removed'} for row in self.catalog.entities('Workspace') if row['status']!='removed']
             marker=dict(id='workspace_reset',type='ResetBoundary',sequence_after=self.catalog.sequence+1,reset_at=now())
@@ -143,6 +145,28 @@ class Workbench:
             return {'reset':True,'removed_workspaces':len(workspaces)}
         finally:self.resetting=False
 
+    def start_native_worker(self):
+        self.process=mp.Process(target=worker_main,args=(self.commands,self.notifications,self.cancel,self.pause,self.visible,self.capture,str(self.key_path)),daemon=False)
+        self.process.start()
+
+    async def close_native_preview(self):
+        worker=self.process
+        if not worker:
+            return
+        # A completed "view" task retains the native session in the idle worker.
+        # Its normal shutdown command closes only the session it owns.
+        if worker.is_alive():
+            self.commands.put_nowait({"kind":"shutdown"})
+            for _ in range(200):
+                if not worker.is_alive():break
+                await asyncio.sleep(.05)
+            if worker.is_alive() or worker.exitcode!=0:
+                raise ValueError("未确认原生预览已关闭。请关闭预览窗口后重试重置")
+        worker.join(timeout=0)
+        self.commands.close()
+        self.commands=mp.Queue(2)
+        self.start_native_worker()
+
     async def start(self):
         for task in self.catalog.entities("Task"):
             if task["status"] in ("running","pausing","paused","cancelling"):
@@ -151,8 +175,8 @@ class Workbench:
                             error="应用上次退出时任务未完成，保留了原生命令日志；从最近已核对存档创建新运行"
                             if journal_exists else "应用上次退出时任务未完成；可从已保存的本体边界恢复")
                 self.audit("task_interrupted",changes=[task])
-        self.process=mp.Process(target=worker_main,args=(self.commands,self.notifications,self.cancel,self.pause,self.visible,self.capture,str(self.key_path)),daemon=False)
-        self.process.start();self.pump_task=asyncio.create_task(self.pump())
+        self.start_native_worker()
+        self.pump_task=asyncio.create_task(self.pump())
         active=self.active()
         if active and active.get("trace_path") and Path(active["trace_path"]).exists():await self.start_source(active)
 
@@ -192,7 +216,7 @@ class Workbench:
                 try:message=self.notifications.get_nowait()
                 except queue.Empty:break
                 kind=message["kind"];data=message["data"];tid=data.get("task_id");task=self.catalog.get(tid) if tid else None
-                if not task:continue
+                if not task or not self.context_visible(task):continue
                 if kind=='phase':
                     self.audit('task_phase',changes=[{**task,'phase':data['phase']}])
                 elif kind=="progress":

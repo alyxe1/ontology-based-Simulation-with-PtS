@@ -37,13 +37,16 @@ export function CaseSeal({checkpoint,comparison,act,busy,setPage}:any){
 }
 
 export function EvidenceCases({act,busy,readOnly,inspect,setPage,revision}:any){
- const [items,setItems]=useState<any[]>([]),[selected,setSelected]=useState(()=>sessionStorage.getItem('evidence-case')||'');
+ const [items,setItems]=useState<any[]>([]),[selected,setSelected]=useState('');
  const [loaded,setLoaded]=useState<any>(null),[reload,setReload]=useState(0),[error,setError]=useState('');
  useEffect(()=>{
   let active=true;
   api(casePath).then(rows=>{
    if(!active)return;
-   setItems(rows);setSelected(id=>rows.some((r:any)=>r.id===id)?id:rows[0]?.id||'');
+   const saved=sessionStorage.getItem('evidence-case');
+   const remembered=rows.find((r:any)=>r.id===saved);
+   if(saved&&!remembered)sessionStorage.removeItem('evidence-case');
+   setItems(rows);setSelected(id=>rows.some((r:any)=>r.id===id)?id:remembered?.id||rows[0]?.id||'');
   }).catch(e=>{if(active)setError(e.message)});
   return()=>{active=false};
  },[reload,revision]);

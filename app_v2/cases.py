@@ -13,6 +13,7 @@ from rdflib import Graph, Literal, Namespace, RDF, RDFS, URIRef
 from rdflib.namespace import OWL, XSD
 
 from .common import BASE, NS, atomic_write, canonical, digest, now, uid
+from .catalog_scope import record_visible, reset_sequence
 from .evidence import check_signature
 from .graph import AUDIT, STATE, OntologyStore, Ref, decode_record
 from .result_analysis import analyze_result
@@ -169,14 +170,27 @@ def create_case(w, body, actor):
 
 def case_record(w, case_id):
     row = w.catalog.get(case_id)
-    if not row or row["type"] != "EvidenceCase":
+    if not row or row["type"] != "EvidenceCase" or not record_visible(w.catalog, case_id, reset_sequence(w.catalog)):
         raise ValueError("证据档案不存在")
     return row
 
 
+def list_cases(w):
+    with w.catalog.lock:
+        boundary = reset_sequence(w.catalog)
+        rows = [
+            {key: row[key] for key in ("id", "name", "created_at", "objective")}
+            for row in w.catalog.entities("EvidenceCase")
+            if record_visible(w.catalog, row["id"], boundary)
+        ]
+    return sorted(rows, key=lambda row: row["created_at"], reverse=True)
+
+
 def case_events(w, case_id):
-    case_record(w, case_id)
-    return [r for r in w.catalog.records() if r["payload"]["details"].get("case_id") == case_id]
+    with w.catalog.lock:
+        case_record(w, case_id)
+        return [r for r in w.catalog.records(after=max(0, reset_sequence(w.catalog)-1))
+                if r["payload"]["details"].get("case_id") == case_id]
 
 
 def append(w, case_id, kind, actor, rows, used, reason):
@@ -192,6 +206,9 @@ def append(w, case_id, kind, actor, rows, used, reason):
 def case_detail(w, case_id, events=None):
     row = case_record(w, case_id)
     events = case_events(w, case_id) if events is None else events
+    previous = row.get("previous_improvement")
+    if previous and not record_visible(w.catalog, previous, reset_sequence(w.catalog)):
+        previous = None
     entries = []
     for record in events:
         p = record["payload"]
@@ -201,7 +218,7 @@ def case_detail(w, case_id, events=None):
                 entries.append({**decode_record(entry), "actor": p["actor"], "sequence": p["sequence"], "occurred_at": p["occurred_at"]})
     return {"id": case_id, "name": row["name"], "objective": row["objective"], "created_at": row["created_at"],
             "baseline": json.loads(row["baseline"]), "runs": json.loads(row["runs"]), "entries": entries,
-            "previous_improvement": row.get("previous_improvement"),
+            "previous_improvement": previous,
             "artifacts": sorted(json.loads(row["files"])), "receipt": receipt(w, case_id, events)}
 
 

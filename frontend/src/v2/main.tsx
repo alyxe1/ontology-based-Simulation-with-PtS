@@ -1,25 +1,51 @@
-import React,{useEffect,useState,useCallback} from 'react';
+import React,{useEffect,useState,useCallback,useRef} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Factory,Workflow,GitBranch,Network,History,Settings,Search,ChevronRight,LogOut,ShieldCheck,X,RefreshCw,Layers} from 'lucide-react';
-import {activityTitle,api,Row,Panel,Table,Empty,KeyValues,stamp,time} from './ui';
+import {Factory,Workflow,GitBranch,Network,History,Settings,Search,ChevronRight,LogOut,ShieldCheck,X,RefreshCw,Layers,Route} from 'lucide-react';
+import {activityTitle,api,Row,Panel,Table,Empty,KeyValues,ServiceUpdateNotice,stamp,time} from './ui';
 import {Production,Products,Scenarios,Semantics,Evidence,Administration} from './workspaces';
+import {MaterialFlow} from './material-flow';
 import './style.css';
 
-const pages=[['production','生产运行',Factory],['products','产品与工艺',Workflow],['scenarios','异常与方案',GitBranch],['semantics','数据与语义',Network],['evidence','证据与回放',History],['admin','系统管理',Settings]] as const;
+const pages=[['production','生产运行',Factory],['products','产品与工艺',Workflow],['flow','工位与物料流',Route],['scenarios','异常与方案',GitBranch],['semantics','数据与语义',Network],['evidence','证据与回放',History],['admin','系统管理',Settings]] as const;
 function App(){
  const[session,setSession]=useState<any>(null),[data,setData]=useState<any>(null),[page,setPage]=useState('production'),[context,setContext]=useState('live'),[focus,setFocus]=useState(''),[filter,setFilter]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[evidence,setEvidence]=useState<any>(null),[evidenceId,setEvidenceId]=useState('');
- const refresh=useCallback(async()=>{try{setData(await api('/state?context='+encodeURIComponent(context)))}catch(e:any){setError(e.message)}},[context]);
+ const stateRequest=useRef(0),appliedRequest=useRef(0),evidenceRequest=useRef(0);
+ const refresh=useCallback(async()=>{
+  const request=++stateRequest.current;
+  try{
+   const next=await api('/state?context='+encodeURIComponent(context));
+   if(request>appliedRequest.current){appliedRequest.current=request;setData(next)}
+  }catch(e:any){if(request===stateRequest.current)setError(e.message)}
+ },[context]);
  useEffect(()=>{api('/session').then(setSession).catch(e=>setError(e.message))},[]);
  useEffect(()=>{if(!session?.user)return;refresh();const source=new EventSource('/api/v2/events');source.addEventListener('revision',refresh);const polling=setInterval(refresh,4000);return()=>{source.close();clearInterval(polling)}},[session,refresh]);
  useEffect(()=>{if(data?.preparation?.status==='ready')setMessage(m=>m.includes('工作空间已创建')?'现场数据已接入，可以推进至维护事件并创建分析基线。':m)},[data?.preparation?.status]);
  useEffect(()=>{if(data?.context==='live'&&context!=='live'&&!data.checkpoints.some((c:any)=>c.id===context)&&!data.tasks.some((t:any)=>t.id===context)&&!data.workspaces.some((w:any)=>w.id===context))setContext('live')},[data,context]);
+ const resetBoundary=data?.reset?.sequence_after;
+ useEffect(()=>{
+  if(!resetBoundary||sessionStorage.getItem('workbench-reset-boundary')===String(resetBoundary))return;
+  sessionStorage.removeItem('evidence-case');
+  sessionStorage.removeItem('case-next-improvement');
+  sessionStorage.setItem('workbench-reset-boundary',String(resetBoundary));
+  ++evidenceRequest.current;
+  setEvidenceId('');setEvidence(null);setContext('live');setFocus('');setFilter('');setError('');
+  if(!data?.workspace)setMessage('工作台已清空，可重新载入车间');
+ },[resetBoundary]);
  async function act(fn:()=>Promise<any>,success='操作已记录'){setBusy(true);setError('');try{const r=await fn();setMessage(success);await refresh();return r}catch(e:any){setError(e.message)}finally{setBusy(false)}}
- async function inspect(id:string,ctx=context){setEvidenceId(id);setEvidence(null);try{setEvidence(await api('/evidence?identity='+encodeURIComponent(id)+'&context='+encodeURIComponent(ctx)))}catch(e:any){setError(e.message)}}
+ async function inspect(id:string,ctx=context){
+  const request=++evidenceRequest.current;
+  setEvidenceId(id);setEvidence(null);
+  try{
+   const result=await api('/evidence?identity='+encodeURIComponent(id)+'&context='+encodeURIComponent(ctx));
+   if(request===evidenceRequest.current)setEvidence(result);
+  }catch(e:any){if(request===evidenceRequest.current){setEvidenceId('');setError(e.message)}}
+ }
  if(!session)return <div className="loading">正在连接生产推演工作台… {error}</div>;
  if(!session.user)return <Login initialized={session.initialized} onLogin={async()=>setSession(await api('/session'))}/>;
  const r=data?.runtime,spec=data?.spec,readOnly=session.user.role==='auditor';
  const objects=r?[...r.orders.map((o:any)=>({id:o.id,name:o.id,kind:'订单'})),...r.batches.map((b:any)=>({id:b.id,name:b.name,kind:'批次'})),...spec.products.map((p:any)=>({...p,kind:'产品'})),...spec.resources.map((p:any)=>({...p,kind:'设备'}))]:[];
- const props={data,context,setContext,focus,setFocus,inspect,act,busy,readOnly,setPage};
+ const semanticViews=session.semantic_views===true;
+ const props={data,context,setContext,focus,setFocus,inspect,act,busy,readOnly,setPage,semanticViews};
  return <div className="application"><header><div className="brand"><Layers size={24}/><b>OntologySim</b><span>生产推演工作台</span><small>V0.2</small></div><div className="header-right"><span className="live-dot"/>本机生产工作空间 <span className="user">{session.user.name} · {({admin:'管理员',analyst:'生产分析员',auditor:'审计员'} as any)[session.user.role]}</span><button title="退出登录" onClick={()=>act(async()=>{await api('/logout',{});setSession(await api('/session'))})}><LogOut size={16}/></button></div></header>
  <div className="shell"><nav>{pages.map(([id,title,Icon])=><button key={id} className={page===id?'active':''} onClick={()=>setPage(id)} title={title}><Icon size={21}/><span>{title}</span></button>)}</nav>
  <aside className="explorer"><div className="explorer-title">生产对象 <span>{objects.length}</span></div><div className="search"><Search size={14}/><input placeholder="搜索批次、产品、设备" value={filter} onChange={e=>setFilter(e.target.value)}/></div><button className={'all-objects '+(!focus?'selected':'')} onClick={()=>setFocus('')}>全部生产对象</button>{['订单','批次','产品','设备'].map(kind=><div key={kind}><div className="group-label">{kind}</div>{objects.filter((o:any)=>o.kind===kind&&(o.id+' '+o.name).toLowerCase().includes(filter.toLowerCase())).map((o:any)=><button className={'object '+(focus===o.id?'selected':'')} key={o.id} onClick={()=>setFocus(o.id)}><ChevronRight size={12}/><span>{o.name}<small>{o.id}</small></span></button>)}</div>)}<div className="explorer-bottom"><ShieldCheck size={16}/> 版本化本体 · 签名证据</div></aside>
@@ -27,7 +53,9 @@ function App(){
  <div className="page-heading"><div><h1>{pages.find(p=>p[0]===page)?.[1]}</h1><p>{focus?`当前对象：${focus} · 跨工作区保持选择`:'沿订单、工艺与运行证据完成生产分析'}</p></div><div className="context-controls"><label>查看上下文<select value={context} onChange={e=>setContext(e.target.value)}><option value="live">当前现场</option>{data?.checkpoints?.map((c:any)=><option key={c.id} value={c.id}>{c.name} · {time(c.time_s)}</option>)}{data?.tasks?.filter((t:any)=>t.status==='completed'&&t.kind!=='baseline').map((t:any)=><option key={t.id} value={t.id}>运行 · {JSON.parse(t.payload).patch?.name||t.kind} · {t.id.slice(-6)}</option>)}{data?.workspaces?.filter((w:any)=>w.status==='archived').map((w:any)=><option key={w.id} value={w.id}>历史 · {w.name}</option>)}</select></label><button onClick={()=>setPage('admin')}>管理上下文</button><button title="刷新" onClick={refresh}><RefreshCw size={16}/></button></div></div>
  {error&&<div className="notice error" role="alert">{error}<button onClick={()=>setError('')}>×</button></div>}{message&&<div className="notice success">{message}<button onClick={()=>setMessage('')}>×</button></div>}
  {data?.preparation&&(page==='production'||!['ready','complete'].includes(data.preparation.status))&&<Preparation value={data.preparation} act={act} busy={busy} readOnly={readOnly} setPage={setPage}/>}
- {data? page==='admin'?<Administration {...props} user={session.user}/>:page==='evidence'?<Evidence {...props}/>:!r?<Panel title="建立生产工作空间"><Empty><Factory size={42}/><h2>从订单与工艺建立现场语义</h2><p>导入产品、毛坯 BOM、工艺和设备资格后，连接 ERP、MES 与 OPC UA 数据。</p><p>预置配置：3 类产品 · 6 个订单 · 12 个生产批次 · 120 件工件</p><button className="primary" disabled={busy||readOnly} onClick={()=>act(()=>api('/workspaces',{}),'生产工作空间已创建。数据源准备状态见上方。')}>载入柔性机加工车间</button></Empty></Panel>:page==='production'?<Production {...props}/>:page==='products'?<Products {...props}/>:page==='scenarios'?<Scenarios {...props}/>:<Semantics {...props}/>:<Empty>正在读取本体版本…</Empty>}
+ <React.Fragment key={resetBoundary||0}>
+ {data? page==='admin'?<Administration {...props} user={session.user}/>:page==='evidence'?<Evidence {...props}/>:!r?<Panel title="建立生产工作空间"><Empty><Factory size={42}/><h2>从订单与工艺建立现场语义</h2><p>导入产品、毛坯 BOM、工艺和设备资格后，连接 ERP、MES 与 OPC UA 数据。</p><p>预置配置：3 类产品 · 6 个订单 · 12 个生产批次 · 120 件工件</p><button className="primary" disabled={busy||readOnly} onClick={()=>act(()=>api('/workspaces',{}),'生产工作空间已创建。数据源准备状态见上方。')}>载入柔性机加工车间</button></Empty></Panel>:page==='production'?<Production {...props}/>:page==='products'?<Products {...props}/>:page==='flow'?(!semanticViews?<Panel title='工位与物料流'><ServiceUpdateNotice/></Panel>:data.context===context?<MaterialFlow key={context+':'+data.workspace?.id+':'+focus} {...props}/>:<Empty>正在读取所选上下文…</Empty>):page==='scenarios'?<Scenarios {...props}/>:<Semantics {...props}/>:<Empty>正在读取本体版本…</Empty>}
+ </React.Fragment>
  </main></div><footer><span>RDF 本体版本 {r?.revision??'—'} · 业务时间 {time(r?.time_s)}</span><span>Plant Simulation 2606 · 本地 COM</span><span className="source-label">来源：合成工厂数据 · {data?.source?.exhausted?'本轮数据已发布完毕':data?.source?.connected?'OPC UA 已连接':'OPC UA 未连接'}</span></footer>
  {evidenceId&&<div className="drawer-shade" onClick={()=>setEvidenceId('')}><aside className="drawer" onClick={e=>e.stopPropagation()}><div className="drawer-title"><div><small>查看依据</small><h2>{evidenceId}</h2></div><button onClick={()=>setEvidenceId('')}><X size={19}/></button></div>{!evidence?<Empty>读取来源与版本…</Empty>:<><div className="lineage-strip"><span>来源记录</span>→<span>对齐 / 规则</span>→<span>业务版本</span>→<span>运行结果</span></div><Panel title="当前对象属性"><KeyValues data={evidence.entity}/></Panel>{!!evidence.constraints?.length&&<Panel title="适用的 ABox 约束"><Table rows={evidence.constraints} columns={[{key:"path",title:"属性或检查"},{key:"constraint",title:"约束",render:(r:any)=>r.message||Object.entries(r.rules).map(([k,v])=>k+" "+String(v)).join(" · ")}]}/></Panel>}<Panel title={`相关活动 · 最近 ${evidence.activities.length} / ${evidence.total_activities??evidence.activities.length}`}><div className="timeline">{evidence.activities.map((a:any)=><div key={a.sequence}><strong>{activityTitle(a.kind)}</strong><span>{stamp(a.occurred_at)} · 业务 {time(a.simulation_time_s)}</span><p>{a.reason||'版本化提交'}</p><small>责任主体：{a.actor} · 版本 {a.sequence}</small><div className="chips">{a.used.slice(0,12).map((id:string)=><button key={id} onClick={()=>inspect(id)}>{id}</button>)}</div><details><summary>输入、输出与变更明细</summary><pre>{JSON.stringify({used:a.used,input_versions:a.input_versions,outputs:a.outputs,changes:a.changes,details:a.details},null,2)}</pre></details></div>)}</div></Panel><Panel title="原始来源记录">{evidence.sources.map((s:any)=><details key={s.id}><summary>{s.source} · {s.raw_id} · {s.quality}</summary><pre>{JSON.stringify(JSON.parse(s.payload),null,2)}</pre></details>)}{!evidence.activities.length&&<Empty>此对象没有已记录的版本活动</Empty>}</Panel></>}</aside></div>}
  </div>;

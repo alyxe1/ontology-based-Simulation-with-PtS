@@ -7,6 +7,9 @@ import sqlite3
 import threading
 import time
 
+SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+
+
 class Accounts:
     def __init__(self,path):
         path.parent.mkdir(parents=True,exist_ok=True)
@@ -42,7 +45,7 @@ class Accounts:
         token=secrets.token_urlsafe(40)
         with self.lock,self.db:
             self.failures.pop(username,None)
-            self.db.execute("INSERT INTO sessions VALUES (?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),username,time.time()+8*3600))
+            self.db.execute("INSERT INTO sessions VALUES (?,?,?)",(hashlib.sha256(token.encode()).hexdigest(),username,time.time()+SESSION_TTL_SECONDS))
         return token,{k:user[k] for k in ("id","name","role")}
 
     def session(self,token):

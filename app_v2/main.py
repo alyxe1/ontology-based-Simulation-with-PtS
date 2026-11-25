@@ -20,11 +20,16 @@ from .specification import ProductionSpec, default_spec, spec_from_graph, qualif
 from .service import Workbench
 from .views import focused_graph, lineage, impact, concept_details
 from .simulation_contract import validate_abox
+from .ontology_overview import overview, triples_page, resource_network, download_graph
+from .material_flow import flow_route, workpiece_history
 from .bundles import make_bundle, verify_bundle
 from .result_analysis import analyze_result
 from .maintenance_outcomes import maintenance_outcomes
 from . import cases
 from .evidence_graph import schema_view as evidence_schema_view
+from .build import backend_build_id
+from .auth import SESSION_TTL_SECONDS
+from .catalog_scope import record_visible, reset_sequence
 
 
 def create_app(root=DATA, workers=True):
@@ -35,6 +40,9 @@ def create_app(root=DATA, workers=True):
         yield
         await app.state.workbench.close()
     app=FastAPI(title="OntologySim 生产推演工作台",version="0.2.0",lifespan=lifespan)
+    app.state.backend_build = backend_build_id()
+    app.state.upgrading = False
+    app.state.browser_writes = 0
     def workbench(request:Request):return request.app.state.workbench
     def user(request:Request,w=Depends(workbench)):
         account=w.accounts.session(request.cookies.get("ontologysim_session"))
@@ -58,12 +66,19 @@ def create_app(root=DATA, workers=True):
 
     @app.middleware("http")
     async def boundary(request,call_next):
-        if request.method not in ("GET","HEAD","OPTIONS") and not request.url.path.startswith("/api/v2/internal/"):
+        browser_write = request.method not in ("GET","HEAD","OPTIONS") and not request.url.path.startswith("/api/v2/internal/")
+        if browser_write:
+            if app.state.upgrading:return JSONResponse({"detail":"工作台正在更新，请稍后刷新页面"},503)
+            if app.state.workbench.resetting:return JSONResponse({"detail":"工作台正在重置"},409)
             origin=request.headers.get("origin")
             if origin and origin!=str(request.base_url).rstrip("/"):return JSONResponse({"detail":"来源地址不匹配"},403)
             if request.headers.get("x-ontologysim")!="v2":return JSONResponse({"detail":"缺少应用请求标识"},403)
         if int(request.headers.get("content-length","0"))>80_000_000:return JSONResponse({"detail":"请求超过 80 MB"},413)
-        response=await call_next(request)
+        if browser_write:app.state.browser_writes+=1
+        try:
+            response=await call_next(request)
+        finally:
+            if browser_write:app.state.browser_writes-=1
         response.headers["X-Content-Type-Options"]="nosniff"
         if request.url.path.startswith("/api/"):response.headers["Cache-Control"]="no-store"
         return response
@@ -77,7 +92,9 @@ def create_app(root=DATA, workers=True):
     @app.get("/api/v2/session")
     async def session(request:Request,w=Depends(workbench)):
         import hashlib
-        return {"initialized":w.accounts.initialized(),"user":w.accounts.session(request.cookies.get("ontologysim_session")),"version":"0.2.0","data_directory_id":hashlib.sha256(str(w.root.resolve()).casefold().encode()).hexdigest()}
+        return {"initialized":w.accounts.initialized(),"user":w.accounts.session(request.cookies.get("ontologysim_session")),
+                "version":"0.2.0","data_directory_id":hashlib.sha256(str(w.root.resolve()).casefold().encode()).hexdigest(),
+                "backend_build":app.state.backend_build,"semantic_views":True}
     @app.post("/api/v2/setup")
     async def setup(body:NewAccount,w=Depends(workbench)):
         if w.accounts.initialized():raise HTTPException(409,"已完成初始化")
@@ -86,7 +103,7 @@ def create_app(root=DATA, workers=True):
     @app.post("/api/v2/login")
     async def login(body:Login,response:Response,w=Depends(workbench)):
         token,account=w.accounts.login(body.username,body.password)
-        response.set_cookie("ontologysim_session",token,httponly=True,samesite="strict",max_age=28800)
+        response.set_cookie("ontologysim_session",token,httponly=True,samesite="strict",max_age=SESSION_TTL_SECONDS)
         w.audit("session_started",actor(account));return account
     @app.post("/api/v2/logout")
     async def logout(request:Request,response:Response,account=Depends(user),w=Depends(workbench)):
@@ -122,6 +139,7 @@ def create_app(root=DATA, workers=True):
     @app.post('/api/v2/reset')
     async def reset(body:dict,account=Depends(administrator),w=Depends(workbench)):
         if body.get('confirm')!='清空工作台':raise ValueError('请输入「清空工作台」确认重置')
+        if app.state.browser_writes>1:raise HTTPException(409,"请等正在处理的操作结束后再重置")
         return await w.reset(actor(account))
     @app.delete('/api/v2/contexts/{identity}')
     async def remove_context(identity:str,account=Depends(writer),w=Depends(workbench)):
@@ -199,6 +217,41 @@ def create_app(root=DATA, workers=True):
     @app.get("/api/v2/graph")
     async def graph(focus="",depth:int=Query(1,ge=1,le=3),limit:int=Query(40,ge=1,le=40),view="relations",expand:bool=False,relation="",context="live",account=Depends(user),w=Depends(workbench)):
         return focused_graph(runtime(w,context),focus,depth,limit,view,expand,relation)
+    @app.get("/api/v2/graph/overview")
+    def graph_overview(scope:Literal["state","evidence","schema"]="state",context="live",
+                       account=Depends(user),w=Depends(workbench)):
+        return overview(runtime(w,context).graph,scope)
+    @app.get("/api/v2/graph/triples")
+    def graph_triples(head:str,scope:Literal["state","evidence","schema"]="state",context="live",
+                      offset:int=Query(0,ge=0),limit:int=Query(30,ge=1,le=100),
+                      group:str=Query("",max_length=320),query:str=Query("",max_length=180),
+                      term:str=Query("",max_length=1000),account=Depends(user),w=Depends(workbench)):
+        page=triples_page(runtime(w,context).graph,scope,head,offset,limit,group,query,term)
+        if page is None:
+            raise HTTPException(409,"全局视图已过期，请刷新全局版本")
+        return page
+    @app.get("/api/v2/graph/network")
+    def graph_network(head:str,scope:Literal["state","evidence","schema"]="state",context="live",
+                      group:str=Query("",max_length=320),account=Depends(user),w=Depends(workbench)):
+        view=resource_network(runtime(w,context).graph,scope,head,group)
+        if view is None:
+            raise HTTPException(409,"全局视图已过期，请刷新全局版本")
+        return view
+    @app.get("/api/v2/graph/rdf")
+    def graph_rdf(head:str,scope:Literal["state","evidence","schema"]="state",context="live",
+                  account=Depends(user),w=Depends(workbench)):
+        content=download_graph(runtime(w,context).graph,scope,head)
+        if content is None:
+            raise HTTPException(409,"全局视图已过期，请刷新全局版本")
+        return Response(content,media_type="text/turtle",
+                        headers={"Content-Disposition":f'attachment; filename="ontologysim-{scope}.ttl"'})
+    @app.get("/api/v2/flow/route")
+    def material_route(product:str,context="live",account=Depends(user),w=Depends(workbench)):
+        return flow_route(runtime(w,context),product)
+    @app.get("/api/v2/flow/workpieces/{identity}")
+    def material_history(identity:str,context="live",through:int|None=Query(None,ge=0),
+                         account=Depends(user),w=Depends(workbench)):
+        return workpiece_history(runtime(w,context),identity,through)
     @app.get("/api/v2/impact")
     async def impacts(context="live",account=Depends(user),w=Depends(workbench)):
         r=runtime(w,context);cursor=r.clock.get("source_cursor")
@@ -210,12 +263,15 @@ def create_app(root=DATA, workers=True):
             attributes,constraints=concept_details(graph,identity.removeprefix('schema/'))
             proof=lineage(graph,'ontology_contract');return {**proof,'entity':attributes,'constraints':constraints}
         if not graph.get(identity) and w.catalog.get(identity):graph=w.catalog
-        return lineage(graph,identity)
+        boundary=reset_sequence(w.catalog) if graph is w.catalog else 0
+        if not record_visible(graph,identity,boundary):
+            raise HTTPException(404,"此证据不在当前工作台")
+        return lineage(graph,identity,first_sequence=boundary)
     @app.get("/api/v2/history")
     async def history(context="live",limit:int=Query(60,ge=1,le=200),account=Depends(user),w=Depends(workbench)):
         graph=w.catalog if context=="catalog" else runtime(w,context).graph
-        boundary=w.catalog.get('workspace_reset') if context=='catalog' else None
-        return {"head":graph.sequence,"hash":graph.head,"records":[{**r,"payload":{k:v for k,v in r["payload"].items() if k not in ("changes","provenance")}} for r in graph.records(after=boundary['sequence_after']-1 if boundary else 0,limit=limit)]}
+        first=reset_sequence(w.catalog) if context=='catalog' else 0
+        return {"head":graph.sequence,"hash":graph.head,"records":[{**r,"payload":{k:v for k,v in r["payload"].items() if k not in ("changes","provenance")}} for r in graph.records(after=max(0,first-1),limit=limit)]}
     @app.get("/api/v2/ontology/layers")
     async def ontology_layers(account=Depends(user)):
         return cases.ontology_layers()
@@ -232,8 +288,7 @@ def create_app(root=DATA, workers=True):
 
     @app.get("/api/v2/evidence-cases")
     async def evidence_cases(account=Depends(user),w=Depends(workbench)):
-        return sorted([{key:row[key] for key in ("id","name","created_at","objective")}
-                       for row in w.catalog.entities("EvidenceCase")], key=lambda row:row["created_at"],reverse=True)
+        return cases.list_cases(w)
 
     @app.post("/api/v2/evidence-cases")
     async def seal_case(body:cases.CaseCreate,account=Depends(writer),w=Depends(workbench)):
@@ -348,6 +403,8 @@ def create_app(root=DATA, workers=True):
             elif a!=b:differences.append({"path":path,"before":a,"after":b})
         diff(original,updated)
         trial=OntologyStore();OntologyRuntime.create(trial,spec);report=await run_in_threadpool(validate_abox,trial)
+        current=w.active()
+        if not current or current["id"]!=ws["id"]:raise ValueError("主数据版本已变化")
         row=dict(id=uid("revision"),type="BusinessRevision",workspace=Ref(ws["id"]),base_revision=body.base_revision,specification=canonical(updated),reason=body.reason,created_at=now(),differences=canonical(differences),conforms=report["conforms"])
         w.audit("business_revision_validated",actor(account),used=[ws["id"]],changes=[row],details={"report":report})
         return {"id":row["id"],"differences":differences,"validation":report,"impact":{"orders":[o.id for o in spec.orders],"bound_existing_runs":"原有批次与方案仍使用原版本","publication":"发布为新的生产工作空间，当前空间自动归档"}}
@@ -402,11 +459,22 @@ def create_app(root=DATA, workers=True):
         if not secrets.compare_digest(request.headers.get("x-shutdown-token",""),getattr(app.state,"shutdown_token","!")):raise HTTPException(403,"退出令牌无效")
         if hasattr(app.state,"server"):app.state.server.should_exit=True
         return {"stopping":True}
+    @app.post("/api/v2/internal/upgrade-shutdown")
+    async def upgrade_shutdown(request:Request,w=Depends(workbench)):
+        token=getattr(app.state,"shutdown_token","")
+        if not token or not secrets.compare_digest(request.headers.get("x-shutdown-token",""),token):
+            raise HTTPException(403,"退出令牌无效")
+        if not hasattr(app.state,"server"):raise HTTPException(503,"此服务未由工作台的启动器管理")
+        if w.active_task or w.resetting or app.state.browser_writes or any(task["status"]=="queued" for task in w.tasks()):
+            raise HTTPException(409,"请等正在处理的操作和仿真任务结束，再运行 start.cmd 更新工作台")
+        app.state.upgrading=True
+        app.state.server.should_exit=True
+        return {"stopping":True}
     static=BASE/"frontend/dist"
     if static.exists():
         app.mount("/assets",StaticFiles(directory=static/"assets"),name="assets")
         @app.get("/")
-        async def index():return FileResponse(static/"index.html")
+        async def index():return FileResponse(static/"index.html",headers={"Cache-Control":"no-cache"})
     return app
 
 app=create_app()

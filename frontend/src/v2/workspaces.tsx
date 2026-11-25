@@ -6,8 +6,9 @@ import {ScenarioComposer} from './scenario-composer';
 import {ScenarioResults} from './scenario-results';
 import {CaseSeal,EvidenceCases} from './evidence-cases';
 import {ProvenanceGraph} from './provenance-graph';
+import {OntologyOverview} from './ontology-overview';
 import {Play,Pause,Save,Download,Upload,ArrowRight,ShieldCheck,AlertTriangle,GitBranch,Eye,RotateCcw,CheckCircle2,FileCheck,ExternalLink} from 'lucide-react';
-import {activityTitle,api,Row,time,stamp,Badge,Panel,Table,Empty,KeyValues} from './ui';
+import {activityTitle,api,Row,time,stamp,Badge,Panel,Table,Empty,KeyValues,ServiceUpdateNotice} from './ui';
 
 function selectedProduct(data:any,focus:string){const{spec,runtime:r}=data;return spec.products.find((p:any)=>(p.id===focus||focus.startsWith(p.id+'/')))||spec.products.find((p:any)=>p.id===(r.batches.find((b:any)=>b.id===focus)?.product||r.orders.find((o:any)=>o.id===focus)?.product))||spec.products[0]}
 function matchingJobs(data:any,focus:string){return data.runtime.jobs.filter((j:any)=>!focus||[j.id,j.batch,j.order,j.product,j.assigned].includes(focus))}
@@ -84,19 +85,23 @@ export function Scenarios(props:any){const{data,context,inspect,act,busy,readOnl
  </React.Fragment>}
  </>}
 
-export function Semantics({data,context,focus,setFocus,inspect,act}:any){
+export function Semantics({data,context,focus,setFocus,inspect,act,semanticViews}:any){
  const [tab,setTab]=useState('relations'),[graph,setGraph]=useState<any>(null),[sources,setSources]=useState<any>(null),[depth,setDepth]=useState(1),[expanded,setExpanded]=useState(false),[validation,setValidation]=useState<any>(null),[schemaFocus,setSchemaFocus]=useState(''),[refresh,setRefresh]=useState(0),[error,setError]=useState('');
- useEffect(()=>{let current=true;setGraph(null);setError('');const params=new URLSearchParams({context,focus:tab==='schema'?schemaFocus:focus,depth:String(depth),view:tab,expand:String(expanded),limit:'18'});api('/graph?'+params).then(x=>{if(current)setGraph(x)}).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[context,focus,depth,tab,expanded,refresh,schemaFocus,data.workspace?.id]);
+ const global=tab==='all-instances'||tab==='all-schema';
+ const schema=tab==='schema'||tab==='all-schema';
+ useEffect(()=>{if(global)return;let current=true;setGraph(null);setError('');const params=new URLSearchParams({context,focus:tab==='schema'?schemaFocus:focus,depth:String(depth),view:tab,expand:String(expanded),limit:'18'});api('/graph?'+params).then(x=>{if(current)setGraph(x)}).catch(e=>{if(current)setError(e.message)});return()=>{current=false}},[context,focus,depth,tab,expanded,refresh,schemaFocus,data.workspace?.id,global]);
  useEffect(()=>{let current=true;setValidation(null);api('/sources?context='+encodeURIComponent(context)).then(x=>{if(current)setSources(x)}).catch(()=>{});return()=>{current=false}},[context,refresh,data.workspace?.id]);
  const [layers,setLayers]=useState<any>(null);
  useEffect(()=>{api('/ontology/layers').then(setLayers).catch(()=>{})},[]);
- return <><Panel title={tab==='schema'?'TBox · 本体定义':'ABox · 实例与运行事实'} action={<div className="segmented">{[['relations','ABox · 业务关系'],['route','工艺顺序'],['impact','影响与依据'],['schema','TBox · 本体结构']].map(([v,n])=><button key={v} className={tab===v?'active':''} onClick={()=>setTab(v)}>{n}</button>)}</div>}>
+ return <><Panel className="semantics-panel" title={schema?'TBox · 本体定义':'ABox · 实例与运行事实'} action={<div className="segmented semantics-tabs">{[['relations','ABox · 业务关系'],['route','工艺顺序'],['impact','影响与依据'],['schema','TBox · 本体结构'],['all-instances','全局 ABox'],['all-schema','全局 TBox']].map(([v,n])=><button key={v} aria-pressed={tab===v} className={tab===v?'active':''} onClick={()=>setTab(v)}>{n}</button>)}</div>}>
+ {global?(semanticViews?<OntologyOverview key={tab+':'+context+':'+data.workspace?.id} context={context} schema={schema}/>:<ServiceUpdateNotice/>):<>
  <div className="flow-note ontology-layers">{tab==='schema'?<>TBox 声明制造类、关系与正式继承。选中概念可查看定义和适用的 ABox 校验规则。<br/><a href="/api/v2/ontology/tbox/ontology.ttl">本体入口 ↗</a> · <a href="/api/v2/ontology/tbox/simulation-shapes.ttl">仿真输入 SHACL ↗</a> · <a href="/api/v2/ontology/tbox/evidence.ttl">证据类定义 ↗</a></>:<>ABox 保存具体的设备、工单、工件和事件。当前版本的运行实例图 <code>{layers?.abox.production}</code>，溯源实例图 <code>{layers?.abox.provenance}</code>。</>}</div>
  <div className="graph-toolbar"><span>焦点 <b>{graph?.focus||graph?.route?.name||focus||'产品'}</b></span>{tab!=='route'&&<><label>展开深度<select value={depth} onChange={e=>setDepth(+e.target.value)}><option value={1}>1 层</option><option value={2}>2 层</option><option value={3}>3 层</option></select></label>{tab!=='schema'&&<label><input type="checkbox" checked={expanded} onChange={e=>setExpanded(e.target.checked)}/>展开工件</label>}</>}
  {tab==='route'&&<select aria-label="选择产品工艺" value={graph?.route?.product||''} onChange={e=>setFocus(e.target.value)}>{data.spec.products.map((p:any)=><option key={p.id} value={p.id}>{p.name}</option>)}</select>}
  <button onClick={()=>{setFocus('');setSchemaFocus('')}}>回到默认焦点</button><button onClick={()=>setRefresh(v=>v+1)}>刷新所选版本</button></div>
  {tab!=='route'&&graph?.sequence!=null&&<p className="note">当前固定版本 {graph.sequence}。点击关系两端的对象可继续查看。</p>}
  {error?<p className="panel-pad negative" role="alert">{error}</p>:tab==='route'?<OrderedRoute route={graph?.route} inspect={inspect}/>:<BusinessCanvas key={tab+':'+(graph?.focus||'')} data={graph} select={tab==='schema'?setSchemaFocus:setFocus} inspect={(id:string)=>inspect(tab==='schema'?'schema/'+id:id)}/>}
+ </>}
  </Panel>
  {tab==='schema'&&<ProvenanceGraph/>}
  <div className="two-columns"><Panel title="跨系统编号与单位映射"><Table rows={sources?.mapping||[]} columns={[{key:'equipment',title:'统一设备'},{key:'mes',title:'MES 编号'},{key:'opc',title:'OPC UA 编号'},{key:'conversion',title:'标准化'}]}/></Panel><Panel title="ABox 语义约束校验" action={<button onClick={()=>act(async()=>setValidation(await api('/validate?context='+encodeURIComponent(context))))}><FileCheck size={14}/>执行 SHACL 校验</button>}><div className="panel-pad"><p>核查工艺后继、首选设备资格、批次归属和设备占用。创建基线和提交方案前执行同一套规则。</p>{validation&&<><Badge value={validation.conforms?'通过':'不符合'}/> · 本体版本 {validation.sequence}{validation.checks?.length>0&&<p>{validation.checks.join(' · ')}</p>}{validation.issues?.length>0&&<Table rows={validation.issues} columns={[{key:'object',title:'对象',render:(row:any)=><button className="link" onClick={()=>inspect(row.object)}>{row.object} ↗</button>},{key:'path',title:'属性'},{key:'message',title:'问题'}]}/>}<details><summary>查看 SHACL 原始报告</summary><pre>{validation.report}</pre></details></>}</div></Panel></div>

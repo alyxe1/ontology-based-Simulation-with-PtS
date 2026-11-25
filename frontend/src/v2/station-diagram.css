@@ -1,0 +1,10 @@
+.station-diagram {display:grid;align-items:stretch;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:7px}
+.station-zone {display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0;padding:10px 9px;background:#f3f7fa;border:1px solid #d7e4eb;border-radius:4px;color:#355e73}
+.station-zone>div {display:flex;align-items:center;gap:6px}
+.station-zone b {font-size:11px}
+.station-zone small {color:#577285;overflow-wrap:anywhere}
+.station-zone code {color:#456d83;font-size:10px;overflow-wrap:anywhere}
+.station-machine {background:#edf4f6}
+.station-zone.traced {background:#e1f4ef;border-color:#55a395;box-shadow:inset 0 0 0 1px #55a395}
+.station-arrow {align-self:center;color:#6c8c9f}
+.station-part {display:inline-flex;gap:4px;align-items:center;font-size:10px;font-weight:600;color:#176b60;overflow-wrap:anywhere}
